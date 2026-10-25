@@ -287,6 +287,7 @@ function updateNight() {
   updateNight.wasSetup = su.running;
   const status = su.running ? `<div class="small"><b>Setting up (one time, runs by itself)</b></div><div class="small">${esc(su.message)}</div><div class="bar" style="max-width:420px"><div style="width:${su.pct}%;background:#9B7BFF"></div></div>`
     : su.error ? `<div class="small bad">Setup problem: ${esc(su.error)}</div><div><button class="btn sm" onclick="installComponents()">Try again</button></div>`
+    : su.warning ? `<div class="small bad">${esc(su.warning)}</div><div><button class="btn sm" onclick="installComponents()">Try again</button></div>`
     : !SETUP ? `<div class="small">Checking this PC…</div>`
     : ready ? `<div class="small good">✓ Ready: ffmpeg, Ollama and ${esc((SETUP.items.find(i => i.key === "model") || {}).label || "the model")}${opt.length ? ` · optional: ${esc(opt.map(i => i.label).join(", "))} not set up` : ""}</div>`
     : `<div class="small bad">Still needed:</div>${bad.map(i => `<div class="small"><b>${esc(i.label)}</b>: ${esc(i.detail)}</div>`).join("")}<div><button class="btn sm" onclick="installComponents()">Download &amp; install now</button></div>`;

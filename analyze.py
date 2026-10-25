@@ -52,7 +52,14 @@ def _model_present(cfg, tags):
     return want in names or (":" not in want and want + ":latest" in names)
 
 
-def find_whisper_cli():
+def find_whisper_cli(cfg=None):
+    """(whisper-cli.exe, model) installed by components.py, or dropped by hand into the tools folder."""
+    try:
+        j = json.loads((mo.APP_DIR / "components" / "whisper" / "info.json").read_text(encoding="utf-8"))
+        if os.path.isfile(j["cli"]) and os.path.isfile(j["model"]):
+            return j["cli"], j["model"]
+    except Exception:
+        pass
     exe = mo.find_tool("whisper-cli")
     model = mo.TOOLS_DIR / "ggml-small.bin"
     return (exe, str(model)) if exe and model.is_file() else None
@@ -93,9 +100,11 @@ def setup_status(cfg):
     has_model = tags is not None and _model_present(cfg, tags)
     items.append({"key": "model", "label": f"Vision model {cfg['vision_model']}", "ok": has_model, "required": True,
                   "detail": "Installed" if has_model else f"Not installed. Run once, before bed:  ollama pull {cfg['vision_model']}"})
-    wh = have_faster_whisper() or bool(find_whisper_cli())
-    items.append({"key": "whisper", "label": "Whisper (speech transcripts)", "ok": wh, "required": False,
-                  "detail": "Ready" if wh else "Optional: not installed, so clips are described from pictures only."})
+    wh = have_faster_whisper() or bool(find_whisper_cli(cfg))
+    items.append({"key": "whisper", "label": "Whisper (speech transcripts)", "ok": wh or not cfg.get("transcribe"),
+                  "required": False,
+                  "detail": ("Ready" if wh else "Turned off in Settings") if wh or not cfg.get("transcribe")
+                  else "Not set up yet (downloaded automatically); until then clips are described from pictures only."})
     return {"items": items, "ready": all(i["ok"] for i in items if i["required"])}
 
 
@@ -131,7 +140,7 @@ def transcribe(cfg, ffmpeg, src, tmp):
     """First ~3 minutes of speech, or '' when no engine is installed / no speech."""
     if not cfg.get("transcribe"):
         return ""
-    cli = None if have_faster_whisper() else find_whisper_cli()
+    cli = None if have_faster_whisper() else find_whisper_cli(cfg)
     if not have_faster_whisper() and not cli:
         return ""
     wav = os.path.join(tmp, "a.wav")
@@ -140,8 +149,10 @@ def transcribe(cfg, ffmpeg, src, tmp):
                  "-ar", "16000", wav], 180).returncode != 0 or not os.path.isfile(wav):
             return ""
         if cli:
-            r = _run([cli[0], "-m", cli[1], "-f", wav, "-nt", "-np"], 600)
+            r = subprocess.run([cli[0], "-m", cli[1], "-f", wav, "-nt", "-np", "-l", "auto"], capture_output=True,
+                               timeout=600, creationflags=mo.NO_WINDOW, cwd=os.path.dirname(cli[0]))
             text = r.stdout.decode(errors="ignore")
+            text = re.sub(r"\[BLANK_AUDIO\]|\[.*?\]|\(.*?\)", " ", text)       # non-speech markers
         else:
             from faster_whisper import WhisperModel
             m = _whisper.get("m")

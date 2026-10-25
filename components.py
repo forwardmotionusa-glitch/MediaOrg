@@ -21,7 +21,7 @@ import mediaorg as mo
 
 OLLAMA_INSTALLER_URL = "https://ollama.com/download/OllamaSetup.exe"
 NEED_FREE_GB = 12                      # installer + model + headroom
-STATE = {"running": False, "step": "", "pct": 0, "message": "", "error": None, "finished": None}
+STATE = {"running": False, "step": "", "pct": 0, "message": "", "error": None, "warning": None, "finished": None}
 
 
 def _set(**kw):
@@ -148,11 +148,131 @@ def pull_model(cfg):
                 _set(message=f"Vision model {model}: {j.get('status', '')}")
 
 
+# --------------------------------------------------------------------------- Whisper (whisper.cpp)
+WHISPER_REPO = "ggml-org/whisper.cpp"
+WHISPER_MODEL_REPO = "ggerganov/whisper.cpp"
+WHISPER_DIR = mo.APP_DIR / "components" / "whisper"
+
+
+def _json_get(url):
+    req = urllib.request.Request(url, headers={"User-Agent": "MediaOrg", "Accept": "application/json"})
+    with urllib.request.urlopen(req, timeout=30) as r:
+        return json.loads(r.read())
+
+
+def pick_assets(releases):
+    """Newest release that ships Windows binaries -> {'gpu': asset or None, 'cpu': asset}. Assets: {name, url, size, sha256}."""
+    for rel in releases:
+        by = {a["name"]: a for a in rel.get("assets", [])}
+        cpu = by.get("whisper-bin-x64.zip")
+        if not cpu:
+            continue
+        gpu = next((a for n, a in sorted(by.items(), reverse=True)
+                    if n.startswith(("whisper-bin-win-cuda-12", "whisper-cublas-12")) and n.endswith("x64.zip")), None)
+        fix = lambda a: a and {"name": a["name"], "url": a["browser_download_url"], "size": a["size"],
+                               "sha256": (a.get("digest") or "").removeprefix("sha256:") or None}
+        return {"gpu": fix(gpu), "cpu": fix(cpu), "tag": rel.get("tag_name")}
+    return None
+
+
+def find_whisper_cli_in(folder):
+    for dirpath, _, files in os.walk(folder):
+        if "whisper-cli.exe" in files:
+            return os.path.join(dirpath, "whisper-cli.exe")
+    return None
+
+
+def whisper_selftest(cli, model):
+    """Transcribe one second of silence. A GPU build on an unsupported card or driver fails here, not mid-run."""
+    import tempfile
+    import wave
+    with tempfile.TemporaryDirectory() as td:
+        wav = os.path.join(td, "s.wav")
+        with wave.open(wav, "wb") as w:
+            w.setnchannels(1)
+            w.setsampwidth(2)
+            w.setframerate(16000)
+            w.writeframes(b"\x00\x00" * 16000)
+        r = subprocess.run([cli, "-m", model, "-f", wav, "-nt", "-np"], capture_output=True, timeout=180,
+                           creationflags=mo.NO_WINDOW, cwd=os.path.dirname(cli))
+        return r.returncode == 0
+
+
+def _sha256(path):
+    import hashlib
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1 << 20), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def install_whisper_binary(assets, model, selftest=whisper_selftest):
+    """Try the GPU build first, keep it only if it really runs; otherwise the small CPU build."""
+    import zipfile
+    order = [("GPU", assets["gpu"]), ("CPU", assets["cpu"])] if assets.get("gpu") and _has_nvidia() else [("CPU", assets["cpu"])]
+    last = ""
+    for variant, a in order:
+        try:
+            _set(step="whisper", pct=0, message=f"Downloading Whisper ({variant} build, {a['size'] / 1e6:.0f} MB)…")
+            zpath = download(a["url"], str(mo.APP_DIR / "downloads" / a["name"]), f"Whisper {variant}", 0, 90)
+            if a["sha256"] and _sha256(zpath).lower() != a["sha256"].lower():
+                os.remove(zpath)
+                raise RuntimeError("download didn't match its checksum")
+            dest = WHISPER_DIR / variant.lower()
+            shutil.rmtree(dest, ignore_errors=True)
+            with zipfile.ZipFile(zpath) as z:
+                z.extractall(dest)
+            os.remove(zpath)
+            cli = find_whisper_cli_in(dest)
+            if not cli:
+                raise RuntimeError("whisper-cli.exe not in the download")
+            _set(pct=95, message=f"Testing Whisper ({variant})…")
+            if not selftest(cli, model):
+                raise RuntimeError(f"the {variant} build didn't run on this PC")
+            (WHISPER_DIR / "info.json").write_text(json.dumps({"cli": cli, "model": model, "variant": variant}), encoding="utf-8")
+            return variant
+        except Exception as e:
+            last = f"{variant}: {e}"
+            _log(f"Whisper {last}")
+            shutil.rmtree(WHISPER_DIR / variant.lower(), ignore_errors=True)
+    raise RuntimeError("Whisper couldn't be set up (" + last + ")")
+
+
+def _has_nvidia():
+    return bool(shutil.which("nvidia-smi")) or os.path.exists(os.path.join(os.environ.get("SystemRoot", r"C:\Windows"), "System32", "nvml.dll"))
+
+
+def ensure_whisper(cfg):
+    """Whisper binary + model for speech transcripts. Optional: a failure here never blocks overnight runs."""
+    if not cfg.get("transcribe"):
+        return
+    if analyze.find_whisper_cli(cfg):
+        return
+    name = f"ggml-{cfg['whisper_model']}.bin"
+    model = str(WHISPER_DIR / name)
+    if not os.path.isfile(model):
+        files = {f["path"]: f for f in _json_get(f"https://huggingface.co/api/models/{WHISPER_MODEL_REPO}/tree/main")}
+        info = files.get(name)
+        if not info:
+            raise RuntimeError(f"Whisper model {name} isn't offered")
+        _set(step="whisper", pct=0, message=f"Downloading the Whisper speech model {name} ({info['size'] / 1e6:.0f} MB)…")
+        download(f"https://huggingface.co/{WHISPER_MODEL_REPO}/resolve/main/{name}", model, "Whisper model", 0, 90)
+        want = (info.get("lfs") or {}).get("oid")
+        if want and _sha256(model).lower() != want.lower():
+            os.remove(model)
+            raise RuntimeError("Whisper model download didn't match its checksum; it will be fetched again next time")
+    assets = pick_assets(_json_get(f"https://api.github.com/repos/{WHISPER_REPO}/releases?per_page=20"))
+    if not assets:
+        raise RuntimeError("no Windows Whisper build found")
+    install_whisper_binary(assets, model)
+
+
 def ensure(cfg):
     """Install/start whatever is missing. Blocking; safe to call again at any time. Returns True when ready."""
     if STATE["running"]:
         return False
-    _set(running=True, step="check", pct=0, message="Checking what's installed…", error=None, finished=None)
+    _set(running=True, step="check", pct=0, message="Checking what's installed…", error=None, warning=None, finished=None)
     try:
         if os.name != "nt":
             raise RuntimeError("Automatic setup is for Windows. Install Ollama from ollama.com and run: ollama pull " + cfg["vision_model"])
@@ -169,6 +289,11 @@ def ensure(cfg):
                 install_ollama(cfg)
         if not analyze._model_present(cfg, analyze._ollama(cfg, "/api/tags", timeout=10)):
             pull_model(cfg)
+        try:
+            ensure_whisper(cfg)
+        except Exception as e:        # optional: clips are still described from pictures
+            _log(f"Whisper setup problem: {e}")
+            _set(warning=f"Speech transcripts aren't set up: {e}")
         _set(step="done", pct=100, message="Ready for overnight runs.")
         return True
     except Exception as e:

@@ -59,7 +59,7 @@ def main():
     srv = HTTPServer(("127.0.0.1", 0), H)
     threading.Thread(target=srv.serve_forever, daemon=True).start()
     base = f"http://127.0.0.1:{srv.server_port}"
-    cfg = dict(mo.DEFAULT_CONFIG, ollama_url=base)
+    cfg = dict(mo.DEFAULT_CONFIG, ollama_url=base, transcribe=False)     # (Whisper setup is tested separately below)
 
     with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as td:
         dest = os.path.join(td, "x.bin")
@@ -86,6 +86,33 @@ def main():
     HAVE_MODEL["yes"] = False
     assert components.ensure(cfg) and HAVE_MODEL["yes"], "missing model should be pulled"
     assert analyze._model_present(cfg, analyze._ollama(cfg, "/api/tags"))
+    # Whisper: the newest *release with Windows binaries* is chosen (the plain v-tags can have none), GPU build preferred
+    rel = lambda tag, names: {"tag_name": tag, "assets": [{"name": n, "browser_download_url": "u/" + n, "size": 1,
+                                                          "digest": "sha256:abc"} for n in names]}
+    pick = components.pick_assets([rel("v1.9.5", []), rel("b5454", ["whisper-bin-x64.zip", "whisper-bin-win-cuda-12.4.0-x64.zip",
+                                                                   "whisper-bin-win-cuda-11.8.0-x64.zip"]),
+                                   rel("b1", ["whisper-bin-x64.zip"])])
+    assert pick["tag"] == "b5454" and pick["gpu"]["name"] == "whisper-bin-win-cuda-12.4.0-x64.zip" and pick["cpu"]["sha256"] == "abc", pick
+    assert components.pick_assets([rel("v1", [])]) is None
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as td:
+        sub = Path(td) / "Release"
+        sub.mkdir()
+        (sub / "whisper-cli.exe").write_bytes(b"x")
+        assert components.find_whisper_cli_in(td) == str(sub / "whisper-cli.exe")
+        # a GPU build that doesn't run is dropped and the CPU build kept
+        import io
+        import zipfile
+        calls = []
+        components.download = lambda url, dest, *a, **k: (zipfile.ZipFile(dest, "w").writestr("Release/whisper-cli.exe", "x") if (os.makedirs(os.path.dirname(dest), exist_ok=True) or True) else 0, dest)[1]
+        components._has_nvidia = lambda: True
+        components.WHISPER_DIR = Path(td) / "w"
+        components.mo.APP_DIR = Path(td)
+        a = {"gpu": {"name": "g.zip", "url": "u", "size": 1, "sha256": None}, "cpu": {"name": "c.zip", "url": "u", "size": 1, "sha256": None},
+             "tag": "t"}
+        variant = components.install_whisper_binary(a, "m.bin", selftest=lambda cli, m: calls.append(cli) or "cpu" in cli)
+        assert variant == "CPU" and len(calls) == 2, (variant, calls)
+        assert json.loads((components.WHISPER_DIR / "info.json").read_text())["variant"] == "CPU"
+        assert not (components.WHISPER_DIR / "gpu").exists(), "failed GPU build should be removed"
     print("components test ok")
 
 
