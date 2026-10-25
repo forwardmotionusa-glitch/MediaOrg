@@ -50,6 +50,7 @@ jobs:
           python tests/test_analyze.py
           python tests/test_overnight.py
           python tests/test_components.py
+          python tests/test_classify.py
 
       - name: Self-test the packaged app (as if extracted from a downloaded zip)
         timeout-minutes: 5

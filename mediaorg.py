@@ -83,8 +83,9 @@ VIDEO_EXT = {"mp4", "mov", "m4v", "avi", "mkv", "mts", "m2ts", "wmv", "3gp", "we
 PHOTO_EXT = {"jpg", "jpeg", "png", "heic", "heif", "webp", "gif", "bmp", "tif", "tiff"}
 RAW_EXT = {"dng", "cr2", "cr3", "nef", "arw", "raf", "orf", "rw2"}
 AUDIO_EXT = {"wav", "mp3", "m4a", "aac", "flac"}
-SIDECAR_EXT = {"lrv", "thm", "xmp", "srt", "aae"}
-PROJECT_EXT = {"prproj", "drp", "drt", "aep", "veg", "kdenlive", "mlt", "wfp", "tscproj", "camproj", "fcpxml", "insprj"}
+SIDECAR_EXT = {"lrv", "lrf", "thm", "xmp", "srt", "aae"}      # lrv: GoPro proxy, lrf: DJI proxy - both stay with their video
+PROJECT_EXT = {"prproj", "drp", "drt", "aep", "veg", "kdenlive", "mlt", "wfp", "tscproj", "camproj", "fcpxml", "insprj",
+               "song", "als", "flp", "cpr", "ptx", "rpp"}      # video editors, plus DAWs (Studio One, Ableton, FL, Cubase, Pro Tools, Reaper)
 JUNK_NAMES = {".ds_store", "thumbs.db", "desktop.ini"}
 SKIP_DIRS = {"$recycle.bin", "system volume information", ".trashes", ".spotlight-v100", ".fseventsd", ".temporaryitems", "_mediaorg_logs"}
 
@@ -472,6 +473,13 @@ def cmd_index(args, cfg):
     if EXIFTOOL_BIN:
         EXIFTOOL = ExifTool(EXIFTOOL_BIN)
 
+    # Unchanged files aren't re-read, so a better file-type rule (e.g. .lrf now a sidecar) is applied to them here.
+    changed = [(kind_of(r["name"], r["ext"]), r["rel"]) for r in con.execute("SELECT rel,name,ext,kind FROM files").fetchall()
+               if kind_of(r["name"], r["ext"]) != r["kind"]]
+    if changed:
+        con.executemany("UPDATE files SET kind=? WHERE rel=?", changed)
+        con.commit()
+        print(f"  re-classified {len(changed):,} already-indexed files with the current file-type rules")
     known = {r["rel"]: (r["size"], r["mtime"]) for r in con.execute("SELECT rel,size,mtime FROM files")}
     seen = set()
     todo = []
@@ -957,7 +965,14 @@ def cmd_report(args, cfg):
 
     reasons = Counter(r["reason"] for r in review)
     unknown_ext = Counter(r["ext"] or "(none)" for r in rows if r["kind"] == "other")
-    mtime_only = [r for r in rows if r["date_source"] == "file_modified"]
+    mtime_only = [r for r in rows if r["date_source"] == "file_modified" and r["kind"] in MEDIA_KINDS]
+    audio_mtime = sum(1 for r in rows if r["date_source"] == "file_modified" and r["kind"] == "audio")   # never moved; not a problem
+    an = dict(con.execute("SELECT status, COUNT(*) FROM analysis GROUP BY status").fetchall())
+    ev_ok = con.execute("SELECT COUNT(*) FROM events WHERE title != '' AND confidence >= ?",
+                        (cfg.get("ai_title_min_confidence", 0.6),)).fetchone()[0]
+    ev_total = con.execute("SELECT COUNT(*) FROM events").fetchone()[0]
+    ai_errors = Counter(re.sub(r"\d+", "#", r["error"] or "")[:90] for r in
+                        con.execute("SELECT error FROM analysis WHERE status='error'"))
     shape = lambda n: re.sub(r"\d", "#", n.rsplit(".", 1)[0])[:30]
     mtime_patterns = Counter(shape(r["name"]) for r in mtime_only)
     anchors = Counter()
@@ -1007,6 +1022,16 @@ def cmd_report(args, cfg):
     else:
         L.append("Nothing.")
 
+    L.append("\n## AI analysis (phase 2)")
+    if an:
+        L.append(f"{an.get('ok', 0):,} clips described, {an.get('error', 0):,} failed, {an.get('skipped', 0):,} skipped "
+                 f"(of {sum(1 for r in rows if r['kind'] in ('video', '360video')):,} videos). "
+                 f"{ev_ok:,} of {ev_total:,} days got a confident name; the rest keep just the date (see Action items > AI review).")
+        for e, n in ai_errors.most_common(3):
+            L.append(f"- {n:,} x {e}")
+    else:
+        L.append("Not run yet. Use the Overnight run on the dashboard.")
+
     L.append("\n## Edit queue - shoot sessions")
     L.append(f"{len(vids):,} videos in {len(sessions):,} sessions (new session after a {cfg['session_gap_hours']}h gap). "
              f"Full list: edit_queue.csv\n")
@@ -1030,6 +1055,11 @@ def cmd_report(args, cfg):
                  f"(# = digit), may need a filename date pattern or metadata reader:")
         for p, n in mtime_patterns.most_common(12):
             L.append(f"    {n:>6,}  {p}  e.g. {next(r['name'] for r in mtime_only if shape(r['name']) == p)}")
+    if audio_mtime:
+        L.append(f"- ({audio_mtime:,} audio files also only have modified dates; audio is never moved, so that is fine)")
+    if an:
+        L.append(f"- analysis: {an.get('ok', 0):,} described, {an.get('error', 0):,} failed {dict(ai_errors.most_common(3))}, "
+                 f"{an.get('skipped', 0):,} skipped; {ev_ok:,}/{ev_total:,} days named confidently")
     if unknown_ext:
         L.append(f"- unrecognized extensions (count): {dict(unknown_ext.most_common(15))}")
     if suspicious_anchors:
