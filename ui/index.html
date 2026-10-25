@@ -1,0 +1,435 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MediaOrg</title>
+<style>
+:root{
+  --bg:#0E1014; --side:#13161C; --panel:#161A21; --line:#252A33; --line2:#343B47; --row:#1F242C;
+  --text:#E6E8EC; --text2:#C3C9D4; --muted:#9AA3B2; --faint:#7E8796;
+  --blue:#7CC4FF; --blue-ink:#08121C; --blue-bg:#18222E; --blue-line:#2E4A63;
+  --purple:#B9A3FF; --amber:#F5B544; --amber-ink:#1A1204; --amber-bg:#1F1A10; --amber-line:#6B5422;
+  --mono:"Cascadia Mono","JetBrains Mono",Consolas,monospace;
+}
+*{box-sizing:border-box}
+html,body{margin:0;height:100%;background:var(--bg);color:var(--text);font:14px/1.45 "Segoe UI Variable Text","Segoe UI",Inter,system-ui,sans-serif}
+a{color:var(--blue)} a:hover{color:#A9D8FF}
+button,select,input,textarea{font:inherit;color:inherit}
+:focus-visible{outline:2px solid var(--blue);outline-offset:2px}
+.app{display:flex;min-height:100%}
+/* sidebar */
+nav.side{flex:0 0 232px;background:var(--side);border-right:1px solid var(--line);padding:20px 14px;display:flex;flex-direction:column;gap:4px;position:sticky;top:0;height:100vh}
+.brand{display:flex;align-items:center;gap:10px;padding:0 8px 20px;font-weight:700;font-size:17px}
+.brand small{font-weight:400;color:var(--muted);font-size:12px}
+.nav{display:flex;align-items:center;justify-content:space-between;padding:10px 12px;border-radius:8px;color:var(--text2);text-decoration:none}
+.nav:hover{background:#1A1E26;color:var(--text)}
+.nav.on{background:#1E232C;color:#fff;font-weight:600}
+.badge{background:var(--amber);color:var(--amber-ink);font-size:12px;font-weight:700;border-radius:10px;padding:1px 8px}
+.drivecard{margin-top:auto;padding:14px 12px;border:1px solid var(--line);border-radius:10px;display:flex;flex-direction:column;gap:6px}
+.jobpill{padding:10px 12px;border-radius:10px;background:var(--blue-bg);border:1px solid var(--blue-line);font-size:13px;display:flex;flex-direction:column;gap:6px}
+/* main */
+main{flex:1;min-width:0;padding:24px 28px 40px;display:flex;flex-direction:column;gap:20px}
+header.top{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:12px}
+h1{margin:0;font-size:24px;font-weight:700;letter-spacing:-.3px}
+h2{margin:0;font-size:15px;font-weight:600}
+.sub{color:var(--muted)}
+.small{font-size:12px}
+.muted{color:var(--muted)}
+.mono{font-family:var(--mono)}
+.panel{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:18px;display:flex;flex-direction:column;gap:12px;min-width:0}
+.panel.flush{padding:0;gap:0}
+.row{display:flex;flex-wrap:wrap;gap:12px;align-items:center}
+.between{justify-content:space-between}
+.grow{flex:1;min-width:0}
+.btn{height:44px;padding:0 16px;border-radius:8px;background:#1E232C;border:1px solid var(--line2);color:var(--text);font-weight:600;cursor:pointer;display:inline-flex;align-items:center;gap:8px;white-space:nowrap;text-decoration:none}
+.btn:hover{background:#252B35;color:var(--text)}
+.btn.ghost{background:transparent}
+.btn.primary{background:var(--blue);border-color:var(--blue);color:var(--blue-ink)}
+.btn.primary:hover{background:#9AD1FF}
+.btn.sm{height:40px;padding:0 12px;font-size:13px}
+.btn.on{background:var(--blue);border-color:var(--blue);color:var(--blue-ink)}
+.btn[disabled]{opacity:.45;cursor:not-allowed}
+.chip{font-size:12px;color:var(--muted);border:1px dashed #3A414D;border-radius:6px;padding:4px 8px}
+.bar{height:8px;background:var(--line);border-radius:4px;overflow:hidden}
+.bar>div{height:100%;border-radius:4px}
+.bar.big{height:10px}
+.indet>div{width:30%!important;animation:slide 1.4s ease-in-out infinite}
+@keyframes slide{0%{margin-left:-30%}100%{margin-left:100%}}
+.steps{list-style:none;margin:0;padding:0;display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:8px}
+.step{border-radius:10px;padding:12px 14px;display:flex;flex-direction:column;gap:2px;background:var(--side);border:1px dashed #2F3743}
+.step.done{background:var(--panel);border:1px solid #2F3743}
+.step.active{background:var(--blue-bg);border:1px solid var(--blue)}
+.step.warn{background:var(--amber-bg);border:1px solid var(--amber-line)}
+.step .s{font-size:12px;color:var(--muted)}
+.step.active .s{color:var(--blue)} .step.warn .s{color:var(--amber)} .step.done .s{color:var(--text2)}
+.stats{display:grid;grid-template-columns:repeat(4,minmax(0,auto));gap:28px}
+.stat .k{color:var(--muted);font-size:12px} .stat .v{font-weight:600;font-size:17px}
+.big{font-size:44px;font-weight:700;letter-spacing:-1px;line-height:1}
+.hwgrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:16px;min-width:0}
+.hwnum{font-size:32px;font-weight:700}
+.cores{display:grid;gap:3px;align-items:end;height:36px}
+.cores div{background:var(--blue);border-radius:2px;min-height:2px}
+.mini{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;font-size:12px}
+.mini b{display:block;font-weight:600;font-size:13px}
+.item{border:1px solid var(--line);border-radius:10px;padding:12px;display:flex;gap:12px;align-items:center}
+.dot{width:10px;height:10px;border-radius:5px;flex:none}
+.log{font-family:var(--mono);font-size:12.5px;line-height:1.7;color:var(--text2);max-height:300px;overflow:auto}
+.log div{white-space:nowrap}
+.log span{color:var(--faint)}
+.tabs{display:flex;flex-wrap:wrap;gap:8px}
+.tab{height:44px;padding:0 16px;border-radius:22px;font-weight:600;cursor:pointer;display:inline-flex;align-items:center;gap:8px;background:var(--panel);color:var(--text2);border:1px solid var(--line2)}
+.tab .n{font-size:12px;border-radius:10px;padding:1px 7px;background:var(--line);color:var(--text2)}
+.tab.on{background:var(--text);color:var(--bg);border-color:var(--text)}
+.tab.on .n{background:var(--bg);color:var(--text)}
+.rv{display:flex;flex-wrap:wrap;gap:14px;align-items:center;padding:12px 18px;border-bottom:1px solid var(--row)}
+.rv:last-child{border-bottom:0}
+.path{font-family:var(--mono);font-size:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.pill{font-size:12px;border-radius:10px;padding:2px 8px;background:#1E2A22;color:#9FE0B8;border:1px solid #2C4A36}
+.ph{padding:16px 18px;border-bottom:1px solid var(--line);display:flex;flex-wrap:wrap;gap:12px;justify-content:space-between;align-items:center;color:var(--text2)}
+input[type=date],input[type=text],input[type=number],select,textarea{height:40px;background:var(--bg);color:var(--text);border:1px solid var(--line2);border-radius:8px;padding:0 10px;color-scheme:dark}
+textarea{height:auto;padding:10px;font-family:var(--mono);font-size:12.5px;width:100%}
+label.f{display:flex;flex-direction:column;gap:6px;font-size:13px;color:var(--text2)}
+.tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:12px}
+.tile{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:14px 16px}
+.tile b{display:block;font-size:26px;font-weight:700}
+.tree{font-family:var(--mono);font-size:12.5px;line-height:1.75;color:var(--text2);overflow-x:auto;white-space:pre}
+.clipgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:10px}
+.clip{display:flex;flex-direction:column;gap:6px;background:none;border:0;padding:0;text-align:left;cursor:pointer;color:inherit}
+.thumb{position:relative;aspect-ratio:16/9;border-radius:8px;background:#20252E;display:flex;align-items:center;justify-content:center}
+.clip:hover .thumb{outline:1px solid var(--line2)}
+.thumb .d{position:absolute;right:6px;bottom:6px;background:var(--bg);font-size:11px;border-radius:4px;padding:1px 5px}
+.thumb .c{position:absolute;left:6px;top:6px;font-size:11px;font-weight:700;border-radius:4px;padding:1px 6px;background:var(--bg)}
+.empty{padding:28px;color:var(--text2);text-align:center}
+pre.report{margin:0;white-space:pre-wrap;font-family:var(--mono);font-size:12.5px;color:var(--text2);max-height:60vh;overflow:auto}
+#toast{position:fixed;right:20px;bottom:20px;display:flex;flex-direction:column;gap:8px;z-index:9}
+.toast{background:#1E232C;border:1px solid var(--line2);border-radius:10px;padding:12px 16px;max-width:420px;box-shadow:0 8px 24px #0008}
+.toast.err{border-color:#7A3B3B;background:#2A1717}
+.modal{position:fixed;inset:0;background:#000a;display:flex;align-items:center;justify-content:center;z-index:8;padding:16px}
+.modal .box{background:var(--panel);border:1px solid var(--line2);border-radius:14px;padding:22px;max-width:480px;width:100%;display:flex;flex-direction:column;gap:14px}
+@media (max-width:860px){
+  .app{flex-direction:column} nav.side{position:static;height:auto;flex:none;flex-direction:row;flex-wrap:wrap;width:100%}
+  .brand{padding:0 8px} .drivecard,.jobpill{display:none} .steps{grid-template-columns:repeat(2,minmax(0,1fr))}
+  .stats{grid-template-columns:repeat(2,minmax(0,1fr))}
+}
+</style>
+</head>
+<body>
+<div class="app">
+  <nav class="side" aria-label="Main">
+    <div class="brand">
+      <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="#7CC4FF" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 9h18M8 4v5M16 4v5"/></svg>
+      <div>MediaOrg <small id="ver"></small></div>
+    </div>
+    <a class="nav" href="#dashboard" data-p="dashboard">Dashboard</a>
+    <a class="nav" href="#review" data-p="review">Action items <span id="navbadge"></span></a>
+    <a class="nav" href="#plan" data-p="plan">Plan &amp; apply</a>
+    <a class="nav" href="#queue" data-p="queue">Edit queue</a>
+    <a class="nav" href="#reports" data-p="reports">Reports</a>
+    <a class="nav" href="#settings" data-p="settings">Settings</a>
+    <div id="jobpill"></div>
+    <div class="drivecard" id="drivecard"></div>
+  </nav>
+  <main id="main" tabindex="-1"><div class="empty">Loading…</div></main>
+</div>
+<div id="toast" role="status" aria-live="polite"></div>
+
+<script>
+"use strict";
+/* ---------- bridge: pywebview in the app, HTTP when previewed with devserver.py ---------- */
+const DEV = !!new URLSearchParams(location.search).get("dev");
+const api = new Proxy({}, {get: (_, m) => (...a) =>
+  DEV ? fetch("/api/" + m, {method: "POST", body: JSON.stringify(a)}).then(r => r.json())
+      : window.pywebview.api[m](...a)});
+
+const $ = s => document.querySelector(s);
+const esc = v => String(v ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+const fmt = n => Number(n || 0).toLocaleString();
+const GB = b => (b / 1073741824).toFixed(1);
+const plural = (n, one, many) => `${fmt(n)} ${n === 1 ? one : (many || one + "s")}`;
+function setHTML(el, html) { if (typeof el === "string") el = document.getElementById(el); if (el && el.__h !== html) { el.innerHTML = html; el.__h = html; } }
+function toast(msg, err) { const t = document.createElement("div"); t.className = "toast" + (err ? " err" : ""); t.textContent = msg; $("#toast").appendChild(t); setTimeout(() => t.remove(), err ? 7000 : 3500); }
+async function call(m, ...a) { try { const r = await api[m](...a); if (r && r.ok === false && r.error) toast(r.error, true); return r; } catch (e) { toast(String(e), true); return null; } }
+function confirmBox(title, body, okText) {
+  return new Promise(res => {
+    const m = document.createElement("div"); m.className = "modal";
+    m.innerHTML = `<div class="box" role="dialog" aria-modal="true" aria-labelledby="mt"><h2 id="mt" style="font-size:18px">${esc(title)}</h2><div class="sub">${esc(body)}</div>
+      <div class="row" style="justify-content:flex-end"><button class="btn ghost" data-a="0">Cancel</button><button class="btn primary" data-a="1">${esc(okText)}</button></div></div>`;
+    m.addEventListener("click", e => { const a = e.target.dataset.a; if (a !== undefined || e.target === m) { m.remove(); res(a === "1"); } });
+    document.body.appendChild(m); m.querySelector('[data-a="1"]').focus();
+  });
+}
+function spark(vals, color, max) {
+  vals = vals.length ? vals : [0]; max = max || Math.max(100, ...vals);
+  const n = Math.max(vals.length - 1, 1);
+  const pts = vals.map((v, i) => `${(i / n * 200).toFixed(1)},${(38 - (v / max) * 36).toFixed(1)}`).join(" ");
+  return `<svg viewBox="0 0 200 40" width="100%" height="40" preserveAspectRatio="none" aria-hidden="true"><polyline fill="none" stroke="${color}" stroke-width="2" vector-effect="non-scaling-stroke" points="${pts}"/></svg>`;
+}
+const ICON_CLIP = `<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#7E8796" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="6" width="13" height="12" rx="2"/><path d="M16 10l5-3v10l-5-3z"/></svg>`;
+const CAM_COLOR = {"360": "var(--purple)", Phone: "var(--text)", GoPro: "var(--blue)", DJI: "var(--amber)", Video: "var(--text2)"};
+
+/* ---------- state + polling ---------- */
+let S = null, page = "", sub = "";
+async function poll() {
+  try { S = await api.state(); } catch (e) { setTimeout(poll, 1500); return; }
+  chrome();
+  if (page === "dashboard") updateDash();
+  const wasRunning = poll.running; poll.running = S.job.running;
+  if (wasRunning && !S.job.running) {           // a job just finished
+    if (S.job.error) toast(S.job.error, true); else toast(`${S.job.name} finished`);
+    if (page !== "dashboard") route(true);
+  }
+  setTimeout(poll, 1000);
+}
+function chrome() {
+  $("#ver").textContent = "v" + S.version;
+  const open = (S.review || {}).open_total || 0;
+  setHTML("navbadge", open ? `<span class="badge">${fmt(open)}</span>` : "");
+  const di = S.drive_info || {};
+  setHTML("drivecard", S.drive ? `<div class="small muted">Drive</div><div style="font-weight:600">${esc(S.drive)} ${esc(di.label || "")}</div>
+    ${di.ok ? `<div class="small muted">${esc(di.used)} used of ${esc(di.total)}</div><div class="bar"><div style="width:${di.pct}%;background:var(--blue)"></div></div>`
+            : `<div class="small" style="color:var(--amber)">Not connected</div>`}
+    <button class="btn sm ghost" onclick="pickDrive()">Change</button>`
+    : `<div class="small muted">No drive chosen</div><button class="btn sm primary" onclick="pickDrive()">Choose drive</button>`);
+  const p = S.progress;
+  setHTML("jobpill", S.job.running && page !== "dashboard" ? `<div class="jobpill"><div><b>${esc(S.job.name)}</b> · ${p.total ? p.pct + "%" : "working…"}</div>
+    <div class="bar ${p.total ? "" : "indet"}"><div style="width:${p.pct}%;background:var(--blue)"></div></div>
+    <button class="btn sm ghost" onclick="stopJob()">Stop</button></div>` : "");
+}
+async function pickDrive() {
+  let r = await call("pick_drive");
+  if (!r || !r.ok) {
+    if (DEV || !r) { const d = prompt("Drive or folder to organize (e.g. E:\\)", S && S.drive || ""); if (d) r = await call("set_drive", d); }
+  }
+  if (r && r.ok) toast("Drive set to " + r.drive);
+}
+async function stopJob() { await call("stop"); toast("Stopping at the next safe point…"); }
+async function startScan() { if (!S.drive) return pickDrive(); const r = await call("start_scan"); if (r && r.ok) toast("Scan started. Nothing moves until you apply."); }
+async function rebuildPlan() { const r = await call("make_plan"); if (r && r.ok) toast("Rebuilding the plan…"); }
+
+/* ---------- router ---------- */
+window.addEventListener("hashchange", () => route());
+async function route(keep) {
+  const [p, s] = (location.hash.slice(1) || "dashboard").split("/");
+  const changed = p !== page; page = p; sub = s || "";
+  document.querySelectorAll(".nav").forEach(a => a.classList.toggle("on", a.dataset.p === page));
+  const fn = {dashboard: renderDash, review: renderReview, plan: renderPlan, queue: renderQueue, reports: renderReports, settings: renderSettings}[page] || renderDash;
+  await fn();
+  if (changed && !keep) $("#main").focus({preventScroll: true});
+}
+
+/* ---------- dashboard ---------- */
+function renderDash() {
+  $("#main").innerHTML = `
+    <header class="top"><div style="display:flex;flex-direction:column;gap:4px"><h1 id="dtitle"></h1><div class="sub" id="dsub"></div></div><div class="row" id="dbtns"></div></header>
+    <ol class="steps" aria-label="Pipeline" id="steps"></ol>
+    <section class="panel" aria-label="Progress" id="prog"></section>
+    <section class="hwgrid" aria-label="Hardware" id="hw"></section>
+    <div class="row" style="align-items:stretch;gap:20px">
+      <section class="panel" style="flex:1 1 320px" aria-labelledby="nh"><div class="row between"><h2 id="nh">Needs you</h2><a href="#review" class="small">See all</a></div><div id="needs" style="display:flex;flex-direction:column;gap:10px"></div><div class="small muted">Skipped items never pause the scan.</div></section>
+      <section class="panel" style="flex:2 1 420px" aria-labelledby="lh"><h2 id="lh">Activity</h2><div class="log" id="log"></div></section>
+    </div>`;
+  if (S) updateDash();
+}
+function updateDash() {
+  const p = S.progress, j = S.job, running = j.running;
+  const phaseName = {walking: "Listing files on the drive", indexing: "Reading dates and fingerprints", applying: "Moving files (same-drive renames)"}[p.phase];
+  setHTML("dtitle", esc(running ? `${j.name === "Scan" ? "Scanning" : j.name === "Apply" ? "Applying plan on" : j.name + " ·"} ${S.drive}` : S.drive ? "Ready" : "Welcome"));
+  setHTML("dsub", running ? "Nothing is moved until you apply the plan" : S.files ? `${fmt(S.files)} files indexed${S.last_index ? " · last scan " + new Date(S.last_index).toLocaleString() : ""}` : "Choose your media drive, then run a scan. A scan never moves anything.");
+  setHTML("dbtns", running
+    ? `<button class="btn ghost" onclick="stopJob()">Stop &amp; save</button>`
+    : `<button class="btn ghost" onclick="pickDrive()">${S.drive ? "Change drive" : "Choose drive"}</button><button class="btn primary" onclick="startScan()" ${S.drive ? "" : "disabled"}>${S.files ? "Scan again" : "Start scan"}</button>`);
+  // pipeline
+  const rv = S.review || {}, pl = S.plan;
+  const st = [
+    ["1", "Index", ["walking", "indexing"].includes(p.phase) && running ? ["active", p.total ? `${p.pct}% · running` : "listing files…"] : S.last_index ? ["done", "Done · " + new Date(S.last_index).toLocaleDateString()] : ["", "Not run yet"]],
+    ["2", "Analyze (GPU)", ["", "Coming in phase 2"]],
+    ["3", "Plan", pl ? (S.decisions.since_plan ? ["warn", `${plural(S.decisions.since_plan, "new decision")} · rebuild`] : ["done", `Plan #${pl.id} · ${fmt(pl.dirs + pl.files)} moves`]) : ["", "After the scan"]],
+    ["4", "Review", rv.open_total ? ["warn", `${fmt(rv.open_total)} need you`] : pl ? ["done", "All clear"] : ["", "After the plan"]],
+    ["5", "Apply", p.phase === "applying" && running ? ["active", `${p.pct}% · moving`] : pl && pl.undone ? ["", "Undone · rebuild to apply"] : pl && pl.applied ? ["done", "Applied · undo any time"] : pl ? ["", "When you are ready"] : ["", "—"]],
+  ];
+  setHTML("steps", st.map(([n, name, [cls, s]]) => `<li class="step ${cls}"><div class="s" style="color:var(--muted)">${n}</div><div style="font-weight:600">${name}</div><div class="s">${esc(s)}</div></li>`).join(""));
+  // progress
+  if (running && phaseName) {
+    const eta = p.eta == null ? "—" : p.eta > 3600 ? `~${Math.floor(p.eta / 3600)} h ${Math.round(p.eta % 3600 / 60)} m` : `~${Math.max(1, Math.round(p.eta / 60))} min`;
+    setHTML("prog", `<div class="row between" style="align-items:flex-end"><div style="display:flex;flex-direction:column;gap:4px"><div class="small muted">${phaseName}</div><div class="big">${p.total ? p.pct + "%" : fmt(p.done)}</div>${p.total ? "" : '<div class="small muted">files found so far</div>'}</div>
+      <div class="stats"><div class="stat"><div class="k">Files</div><div class="v">${fmt(p.done)}${p.total ? ` <span class="muted" style="font-weight:400">/ ${fmt(p.total)}</span>` : ""}</div></div>
+      <div class="stat"><div class="k">Media covered</div><div class="v">${GB(p.bytes)} GB</div></div><div class="stat"><div class="k">Speed</div><div class="v">${p.rate ? p.rate.toFixed(1) + " files/s" : "—"}</div></div><div class="stat"><div class="k">Time left</div><div class="v">${eta}</div></div></div></div>
+      <div class="bar big ${p.total ? "" : "indet"}"><div style="width:${p.pct}%;background:var(--blue)"></div></div>
+      <div class="mono small" style="color:var(--text2);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">Now: ${esc(p.current)}</div>`);
+  } else {
+    const last = p.phase === "stopped" ? "Last run was stopped. Progress is saved; scan again to pick up where it left off."
+      : pl && pl.undone ? `Plan #${pl.id} was undone; everything is back where it was. Rebuild the plan to apply again.`
+      : pl && pl.applied ? `Plan #${pl.id} is applied. Undo it any time from Plan & apply, or scan again to organize anything new.`
+      : pl ? `Plan #${pl.id}: ${plural(pl.dirs, "named folder")} and ${plural(pl.files, "loose file")} ready to move.` : "";
+    setHTML("prog", `<div class="row between"><div style="display:flex;flex-direction:column;gap:4px"><div class="small muted">Status</div><div style="font-size:20px;font-weight:600">${running ? esc(j.name) + "…" : S.files ? "Idle" : "No scan yet"}</div><div class="sub">${esc(last)}</div></div>
+      <div class="row">${pl && pl.undone ? `<button class="btn" onclick="rebuildPlan()">Rebuild plan</button>` : pl && !pl.applied ? `<a class="btn" href="#plan">Review plan</a>` : ""}</div></div>`);
+  }
+  // hardware
+  const h = S.hw, g = h.gpu || {}, cores = h.cores || [];
+  setHTML("hw", `
+    <div class="panel"><div class="row between"><b>CPU</b><span class="small muted">${esc(h.cpu_name || "")}</span></div>
+      <div class="hwnum" style="color:var(--blue)">${h.cpu ?? "—"}%</div>${spark(h.hist.cpu, "#7CC4FF", 100)}
+      <div class="small muted">${h.threads} threads</div>
+      <div class="cores" style="grid-template-columns:repeat(${Math.max(cores.length, 1)},minmax(0,1fr))" aria-hidden="true">${cores.map(c => `<div style="height:${Math.max(2, c * .36)}px;opacity:${.45 + c / 200}"></div>`).join("")}</div>
+      <div class="small muted">RAM ${h.ram_total ? GB(h.ram_used) + " / " + GB(h.ram_total) + " GB" : "—"}</div></div>
+    <div class="panel"><div class="row between"><b>GPU</b><span class="small muted">${esc(h.gpu_name || "")}</span></div>
+      ${h.has_gpu ? `<div class="hwnum" style="color:var(--purple)">${g.util ?? 0}%</div>${spark(h.hist.gpu, "#B9A3FF", 100)}
+      <div class="row between small muted"><span>VRAM</span><span>${g.mem_total ? GB(g.mem_used) + " / " + GB(g.mem_total) + " GB" : "—"}</span></div>
+      <div class="bar"><div style="width:${g.mem_total ? 100 * g.mem_used / g.mem_total : 0}%;background:var(--purple)"></div></div>
+      <div class="mini"><div class="muted">Temp<b style="color:var(--text)">${g.temp ?? "—"}°C</b></div><div class="muted">Power<b style="color:var(--text)">${g.power ?? "—"} W</b></div><div class="muted">Decoder<b style="color:var(--text)">${g.dec ?? "—"}%</b></div></div>
+      <div class="small muted">Phase 1 runs on CPU + disk; the GPU does the work in phase 2.</div>`
+      : `<div class="hwnum muted">—</div><div class="sub">No NVIDIA GPU detected. Scanning and organizing work fine without one; phase 2 analysis will need it.</div>`}</div>
+    <div class="panel"><div class="row between"><b>Disk</b><span class="small muted">the usual bottleneck</span></div>
+      <div class="hwnum">${h.read_mbs ?? 0} <span class="muted" style="font-size:15px;font-weight:500">MB/s</span></div>${spark(h.hist.read, "#E6E8EC")}
+      <div class="small muted">Read by MediaOrg · USB 3.0 HDDs top out around 150–200</div>
+      ${S.drive_info && S.drive_info.ok ? `<div class="row between small muted"><span>${esc(S.drive)}</span><span>${esc(S.drive_info.used)} / ${esc(S.drive_info.total)}</span></div><div class="bar"><div style="width:${S.drive_info.pct}%;background:var(--text)"></div></div>` : ""}</div>`);
+  // needs you
+  const o = rv.open || {}, items = [];
+  if (S.decisions.since_plan && !running) items.push(["#7CC4FF", `${plural(S.decisions.since_plan, "decision")} waiting`, "Rebuild the plan to include them", `<button class="btn sm primary" onclick="rebuildPlan()">Rebuild plan</button>`]);
+  if (o.projects) items.push(["#F5B544", `${plural(o.projects, "folder holds", "folders hold")} editing projects`, "Left in place so project links don't break", `<a class="btn sm" href="#review/projects">Decide</a>`]);
+  if (o.dates) items.push(["#F5B544", `${plural(o.dates, "item has", "items have")} no real date`, 'Only the "modified" time was found', `<a class="btn sm" href="#review/dates">Set dates</a>`]);
+  if (o.clash) items.push(["#F5B544", plural(o.clash, "name clash", "name clashes"), "Same name already at the destination", `<a class="btn sm" href="#review/clash">Resolve</a>`]);
+  if (S.dups && S.dups.sets) items.push(["#7CC4FF", `${S.dups.waste} of likely duplicates`, `${plural(S.dups.sets, "set")} · nothing is ever deleted`, `<a class="btn sm" href="#review/dups">View</a>`]);
+  setHTML("needs", items.length ? items.map(([c, t, s, b]) => `<div class="item"><div class="dot" style="background:${c}" aria-hidden="true"></div><div class="grow"><div style="font-weight:600">${t}</div><div class="small muted">${s}</div></div>${b}</div>`).join("")
+    : `<div class="item"><div class="dot" style="background:#9FE0B8"></div><div class="grow"><div style="font-weight:600">Nothing needs you</div><div class="small muted">${pl ? "Every item has a decision." : "Run a scan to see what needs attention."}</div></div></div>`);
+  setHTML("log", S.log.length ? S.log.map(l => `<div><span>${esc(l.t)}</span>  ${esc(l.m)}</div>`).join("") : `<div class="muted">Nothing yet.</div>`);
+}
+
+/* ---------- action items ---------- */
+let RV = null;
+const TABS = [["projects", "Editing projects"], ["dates", "No real date"], ["clash", "Name clashes"], ["dups", "Duplicates"], ["insta", "Insta360 sets"], ["other", "Other"]];
+async function renderReview() {
+  RV = await api.review();
+  const tab = sub || "projects";
+  const count = k => RV[k] ? RV[k].length : 0;
+  const rebuild = S && S.decisions && S.decisions.since_plan ? `<div class="item" style="border-color:var(--blue-line);background:var(--blue-bg)"><div class="grow"><b>${plural(S.decisions.since_plan, "decision")}</b> will be used on the next plan.</div><button class="btn sm primary" onclick="rebuildPlan()">Rebuild plan</button></div>` : "";
+  $("#main").innerHTML = `<header class="top"><div style="display:flex;flex-direction:column;gap:4px"><h1>Action items</h1><div class="sub">Set aside so the scan never waits. Decide whenever you like; decisions go into the next plan.</div></div></header>
+    ${rebuild}
+    <div class="tabs" role="tablist">${TABS.map(([k, l]) => `<a role="tab" aria-selected="${k === tab}" class="tab ${k === tab ? "on" : ""}" href="#review/${k}" style="text-decoration:none">${l} <span class="n">${fmt(count(k))}</span></a>`).join("")}</div>
+    <section class="panel flush" id="rvbody">${reviewBody(tab)}</section>`;
+}
+function decisionLabel(d) { if (!d) return ""; return {move: "Will move", keep: "Keep in place", date: "Date " + d.value, rename: 'Into a "(2)" folder', skip: "Skip"}[d.action] || d.action; }
+function reviewBody(tab) {
+  const list = RV[tab] || [];
+  if (!list.length) return `<div class="empty">Nothing here.</div>`;
+  const R = s => esc(s);
+  if (tab === "projects") return `<div class="ph"><div>Moving these folders would break links inside the editing project. Default is <b style="color:var(--text)">keep in place</b>.</div><button class="btn sm" onclick="decideAll('projects','keep')">Keep all in place</button></div>` +
+    list.map(it => { const a = it.decision && it.decision.action || "keep"; return `<div class="rv"><div class="grow" style="flex:2 1 280px"><div class="path">${R(it.rel)}</div><div class="small muted">${R(it.projects.join(", "))} · ${R(it.dates)} · ${plural(it.count, "file")} · ${R(it.size)}</div></div>
+      <div class="row" role="radiogroup" aria-label="Decision"><button class="btn sm ${a === "keep" ? "on" : "ghost"}" role="radio" aria-checked="${a === "keep"}" onclick="decide(this,'keep')" data-rel="${R(it.rel)}">Keep in place</button><button class="btn sm ${a === "move" ? "on" : "ghost"}" role="radio" aria-checked="${a === "move"}" onclick="decide(this,'move')" data-rel="${R(it.rel)}">Move anyway</button>
+      <button class="btn sm ghost" onclick="openRel(this)" data-rel="${R(it.rel)}">Show</button></div></div>`; }).join("");
+  if (tab === "dates") return `<div class="ph">These only have a "modified" time, which is often the copy date, not the capture date. Pick the real date, or accept the suggestion.</div>` +
+    list.map((it, i) => `<div class="rv"><div class="grow" style="flex:2 1 260px"><div class="path">${R(it.rel)}</div><div class="small muted">${it.is_dir ? plural(it.count, "file") + " · " + R(it.size) + (it.dates ? "" : " · no capture dates found") : R(it.size) + " · " + R(it.detail)}</div></div>
+      <label class="f small">Date<input type="date" id="d${i}" value="${R(it.decision && it.decision.value || it.suggest)}"></label>
+      ${it.decision ? `<span class="pill">${R(decisionLabel(it.decision))}</span><button class="btn sm ghost" onclick="decide(this,'clear')" data-rel="${R(it.rel)}">Clear</button>` : ""}
+      <button class="btn sm primary" onclick="decide(this,'date',document.getElementById('d${i}').value)" data-rel="${R(it.rel)}">Use date</button>
+      <button class="btn sm ghost" onclick="openRel(this)" data-rel="${R(it.rel)}">Show</button></div>`).join("");
+  if (tab === "clash") return `<div class="ph">Something with the same name is already where these would go. Often it's a duplicate. Skip, or move into a sibling "(2)" folder so nothing is overwritten.</div>` +
+    list.map(it => { const a = it.decision && it.decision.action; return `<div class="rv"><div class="grow" style="flex:2 1 280px"><div class="path">${R(it.rel)}</div><div class="small muted">Already there: <span class="mono">${R(it.detail)}</span></div></div>
+      <div class="row"><button class="btn sm ${!a || a === "skip" ? "on" : "ghost"}" onclick="decide(this,'skip')" data-rel="${R(it.rel)}">Skip</button><button class="btn sm ${a === "rename" ? "on" : "ghost"}" onclick="decide(this,'rename')" data-rel="${R(it.rel)}">Move into "(2)"</button>
+      <button class="btn sm ghost" onclick="openRel(this)" data-rel="${R(it.rel)}">Show</button></div></div>`; }).join("");
+  if (tab === "dups") return `<div class="ph">Files with the same fingerprint (size + start + end of file). MediaOrg never deletes anything; check them yourself in Explorer.</div>` +
+    list.map(d => `<div class="rv" style="align-items:flex-start"><div class="grow" style="flex:2 1 300px">${d.paths.map(p => `<div class="row" style="gap:8px"><button class="btn sm ghost" onclick="openRel(this,true)" data-rel="${R(p)}" aria-label="Show in Explorer">Show</button><span class="path grow">${R(p)}</span></div>`).join("")}${d.n > d.paths.length ? `<div class="small muted">and ${fmt(d.n - d.paths.length)} more copies</div>` : ""}</div><div class="small muted">${plural(d.n, "copy", "copies")} · ${R(d.size)} each · ${R(d.waste)} extra</div></div>`).join("");
+  if (tab === "insta") return `<div class="ph">Capture sets with a front-lens file but no back-lens file. Normal for X3/X4 (single file); on older cameras, the other half may be elsewhere.</div>` +
+    list.map(s => `<div class="rv"><div class="grow"><div class="path">${R(s.folder)}\\ · ${R(s.key)}</div><div class="small muted mono">${R(s.names.join("  "))}</div></div><button class="btn sm ghost" onclick="openRel(this)" data-rel="${R(s.folder)}">Show</button></div>`).join("");
+  return `<div class="ph">Left in place: not media, unreadable, or failed to move. No decision needed.</div>` +
+    list.map(it => `<div class="rv"><div class="grow"><div class="path">${R(it.rel)}</div><div class="small muted">${R(it.reason)} ${R(it.detail)}</div></div><button class="btn sm ghost" onclick="openRel(this,true)" data-rel="${R(it.rel)}">Show</button></div>`).join("");
+}
+async function decide(btn, action, value) {
+  if (action === "date" && !value) return toast("Pick a date first.", true);
+  const r = await call("decide", btn.dataset.rel, action === "skip" ? "keep" : action, value || null);
+  if (r && r.ok) { const y = scrollY; await renderReview(); scrollTo(0, y); }
+}
+async function decideAll(group, action) { await call("decide_all", group, action); await renderReview(); toast("Saved"); }
+async function openRel(btn, select) { await call("open_path", btn.dataset.rel, !!select); }
+
+/* ---------- plan & apply ---------- */
+async function renderPlan() {
+  const v = await api.plan_view(), p = v.plan, running = S && S.job.running;
+  const hist = v.history.map(h => `<div class="row between" style="padding:10px 0;border-top:1px solid var(--row)"><div><div style="font-weight:600">Batch ${h.batch} · ${fmt(h.n)} moves${h.undone >= h.n ? " · undone" : h.undone ? ` · ${fmt(h.undone)} undone` : ""}</div><div class="small muted">${esc(new Date(h.ts).toLocaleString())}</div></div>
+    ${h.batch === v.undoable ? `<button class="btn sm" onclick="undoLast(${h.n - h.undone})" ${running ? "disabled" : ""}>Undo</button>` : ""}</div>`).join("") || `<div class="muted small">Nothing applied yet.</div>`;
+  if (!p) { $("#main").innerHTML = `<header class="top"><h1>Plan &amp; apply</h1></header><div class="panel empty">No plan yet. Run a scan from the Dashboard; it builds the plan automatically.</div><section class="panel"><h2>History</h2>${hist}</section>`; return; }
+  const before = p.sample.map(s => esc(s.src)).join("\n"), after = p.sample.map(s => esc(s.dst)).join("\n");
+  const stale = S && S.decisions && S.decisions.since_plan;
+  $("#main").innerHTML = `<header class="top"><div style="display:flex;flex-direction:column;gap:4px"><h1>Plan #${p.id} — ${p.applied ? "applied" : "ready to apply"}</h1><div class="sub">Built ${esc(new Date(p.created).toLocaleString())} · ${fmt(p.review)} items set aside · 360 files: ${esc(p.settings.insta360_mode)}</div></div>
+      <div class="row"><button class="btn ghost" onclick="call('open_reports_folder')">Open plan.csv folder</button><button class="btn" onclick="rebuildPlan()" ${running ? "disabled" : ""}>Rebuild plan</button></div></header>
+    ${stale ? `<div class="item" style="border-color:var(--blue-line);background:var(--blue-bg)"><div class="grow"><b>${plural(stale, "new decision")}</b> ${stale === 1 ? "isn't" : "aren't"} in this plan yet.</div><button class="btn sm primary" onclick="rebuildPlan()">Rebuild plan</button></div>` : ""}
+    <div class="tiles"><div class="tile"><b>${fmt(p.dirs)}</b><span class="small muted">named ${p.dirs === 1 ? "folder" : "folders"} moved whole</span></div><div class="tile"><b>${fmt(p.files)}</b><span class="small muted">loose files sorted by date</span></div><div class="tile"><b>${fmt(p.insta)}</b><span class="small muted">Insta360 sets kept together</span></div><div class="tile"><b>0 · 0</b><span class="small muted">files copied · deleted</span></div></div>
+    <section class="row" style="align-items:stretch;gap:16px" aria-label="Before and after">
+      <div class="panel" style="flex:1 1 340px"><div class="row between"><h2>Now</h2><span class="small muted mono">${esc(v.root)}</span></div><div class="tree">${before || "—"}</div></div>
+      <div class="panel" style="flex:1 1 340px;border-color:var(--blue-line)"><div class="row between"><h2>After apply</h2><span class="small muted">sample of ${fmt(p.sample.length)} of ${fmt(p.total)}</span></div><div class="tree">${after || "—"}</div></div></section>
+    <section class="panel" style="background:var(--blue-bg);border-color:var(--blue-line);flex-direction:row;flex-wrap:wrap;align-items:center;justify-content:space-between" aria-label="Apply">
+      <div style="display:flex;flex-direction:column;gap:4px;flex:1 1 320px"><div style="font-weight:600;font-size:16px">${p.applied ? "This plan has been applied" : `Apply ${fmt(p.total)} moves on ${esc(v.root)}`}</div>
+        <div class="sub" style="color:var(--text2)">Same-drive renames · every move logged on the drive · fully undoable</div>
+        <label class="row small" style="gap:8px;min-height:44px;color:var(--text2)"><input type="checkbox" id="prune" checked style="width:18px;height:18px;accent-color:var(--blue)"> Remove folders left empty afterwards</label></div>
+      <button class="btn primary" style="height:48px;font-size:15px" onclick="applyPlan(${p.total})" ${p.applied || !p.total || running ? "disabled" : ""}>Apply plan</button></section>
+    <section class="panel"><h2>History</h2>${hist}</section>`;
+}
+async function applyPlan(n) {
+  if (!await confirmBox("Apply the plan?", `${fmt(n)} files and folders will be moved on ${S.drive}. Nothing is copied or deleted, and you can undo it from this screen.`, "Apply plan")) return;
+  const r = await call("apply_plan", $("#prune").checked); if (r && r.ok) { toast("Applying…"); location.hash = "#dashboard"; }
+}
+async function undoLast(n) {
+  if (!await confirmBox("Undo the last apply?", `${fmt(n)} moves will be put back where they came from.`, "Undo")) return;
+  const r = await call("undo"); if (r && r.ok) toast("Undoing…");
+}
+
+/* ---------- edit queue ---------- */
+async function renderQueue() {
+  const cam = sub || "all";
+  const q = await api.edit_queue(cam);
+  const opts = [["all", "All cameras"], ["360", "Insta360 only"], ["GoPro", "GoPro only"], ["Phone", "Phone only"], ["DJI", "DJI only"], ["Video", "Other video"]];
+  $("#main").innerHTML = `<header class="top"><div style="display:flex;flex-direction:column;gap:4px"><h1>Edit queue</h1><div class="sub">${plural(q.total_clips, "video")} in ${plural(q.total_sessions, "shoot session")}, newest first. Click a clip to show it in Explorer.</div></div>
+    <label class="row small muted" style="gap:8px">Show <select onchange="location.hash='#queue/'+this.value">${opts.map(([k, l]) => `<option value="${k}" ${k === cam ? "selected" : ""}>${l}</option>`).join("")}</select></label></header>
+    ${q.sessions.length ? q.sessions.map(s => `<section class="panel"><div class="row between" style="align-items:flex-start"><div style="display:flex;flex-direction:column;gap:4px;min-width:0"><div class="small muted">Session ${s.num} · ${esc(s.when)}</div><h2 style="font-size:18px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(s.title)}</h2><div class="small" style="color:var(--text2)">${esc(s.meta)}</div></div>
+      <div class="row"><button class="btn sm" onclick="openRel(this)" data-rel="${esc(s.folder)}">Open folder</button><button class="btn sm ghost" onclick="copySession(${s.num})">Copy file list</button></div></div>
+      <div class="clipgrid">${s.clips.map(c => `<button class="clip" onclick="openRel(this,true)" data-rel="${esc(c.rel)}" title="${esc(c.rel)}"><div class="thumb">${ICON_CLIP}<span class="d">${esc(c.dur)}</span><span class="c" style="color:${CAM_COLOR[c.cam] || "var(--text)"}">${esc(c.cam)}</span></div><div class="mono small" style="color:var(--text2);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(c.time)}  ${esc(c.name)}</div></button>`).join("")}</div>
+      ${s.more ? `<div class="small muted">+ ${fmt(s.more)} more clips in this session</div>` : ""}</section>`).join("")
+      : `<div class="panel empty">No videos with dates yet. Run a scan first.</div>`}`;
+}
+async function copySession(n) { const r = await call("copy_session", n); if (r && r.ok) toast(`Copied ${r.count} file paths`); }
+
+/* ---------- reports ---------- */
+async function renderReports() {
+  const r = await api.report_text();
+  $("#main").innerHTML = `<header class="top"><div style="display:flex;flex-direction:column;gap:4px"><h1>Reports</h1><div class="sub">${r.ok ? "Latest report · " + esc(r.when) : "No report yet. One is written after every scan."}</div></div>
+    <div class="row"><button class="btn ghost" onclick="call('open_reports_folder')">Open folder</button><button class="btn ghost" onclick="call('open_report')">Open in Notepad</button><button class="btn" onclick="call('regenerate_report')">Regenerate</button></div></header>
+    <section class="panel" style="background:var(--blue-bg);border-color:var(--blue-line);flex-direction:row;flex-wrap:wrap;align-items:center;justify-content:space-between">
+      <div style="flex:1 1 320px"><b>Help improve MediaOrg for your drive</b><div class="sub" style="color:var(--text2)">Copies the "Prompt for Claude" section: what it couldn't date, folders it may have misread, errors. Paste it into your chat with Claude.</div></div>
+      <button class="btn primary" onclick="copyPrompt()" ${r.ok ? "" : "disabled"}>Copy prompt for Claude</button></section>
+    <section class="panel"><pre class="report">${esc(r.text || "")}</pre></section>`;
+}
+async function copyPrompt() { const r = await call("copy_prompt"); if (r && r.ok) toast("Copied. Paste it into Claude."); }
+
+/* ---------- settings ---------- */
+async function renderSettings() {
+  const {cfg, data_dir} = await api.get_settings();
+  $("#main").innerHTML = `<header class="top"><div style="display:flex;flex-direction:column;gap:4px"><h1>Settings</h1><div class="sub">Changes apply to the next plan. Your data lives in <span class="mono">${esc(data_dir)}</span></div></div></header>
+    <form class="panel" id="sform" onsubmit="saveSettings(event)" style="gap:18px">
+      <div class="row" style="gap:20px;align-items:flex-start">
+        <label class="f">Organized folder name<input type="text" name="organized_folder_name" value="${esc(cfg.organized_folder_name)}"></label>
+        <label class="f">Insta360 files go to<select name="insta360_mode"><option value="together" ${cfg.insta360_mode === "together" ? "selected" : ""}>Each day's folder, in a 360 subfolder</option><option value="separate" ${cfg.insta360_mode === "separate" ? "selected" : ""}>A separate 360 folder tree</option></select></label>
+        <label class="f">New shoot session after (hours)<input type="number" name="session_gap_hours" min="0.25" step="0.25" value="${esc(cfg.session_gap_hours)}"></label>
+        <label class="f">Flag folders spanning more than (days)<input type="number" name="wide_span_days" min="1" value="${esc(cfg.wide_span_days)}"></label>
+        <label class="f">Parallel readers (HDD: 2–4)<input type="number" name="workers" min="1" max="32" value="${esc(cfg.workers)}"></label>
+      </div>
+      <label class="row" style="gap:10px;min-height:44px"><input type="checkbox" name="move_low_confidence_dates" ${cfg.move_low_confidence_dates ? "checked" : ""} style="width:18px;height:18px;accent-color:var(--blue)"> Also move files that only have a "modified" date (instead of asking)</label>
+      <label class="f">Generic folder names, one per line. Files in these are sorted by date; any other folder name is treated as a named project and kept whole.
+        <textarea name="generic_folder_names" rows="12">${esc((cfg.generic_folder_names || []).join("\n"))}</textarea></label>
+      <div class="row"><button class="btn primary" type="submit">Save settings</button><span class="small muted">Then use Rebuild plan on the Plan screen.</span></div>
+    </form>`;
+}
+async function saveSettings(e) {
+  e.preventDefault();
+  const f = new FormData(e.target), o = Object.fromEntries(f.entries());
+  o.move_low_confidence_dates = f.get("move_low_confidence_dates") === "on";
+  const r = await call("save_settings", o); if (r && r.ok) toast("Settings saved");
+}
+
+/* ---------- boot ---------- */
+function boot() { if (boot.done) return; boot.done = true; poll().then(() => route()); }
+if (DEV) boot(); else window.addEventListener("pywebviewready", boot);
+setTimeout(() => { if (!boot.done && window.pywebview && window.pywebview.api) boot(); }, 1500);
+</script>
+</body>
+</html>

@@ -2,7 +2,7 @@ name: Build Windows app
 
 on:
   push:
-    tags: ["v*"]          # pushing a tag like v0.1.1 publishes a new release
+    tags: ["v*"]          # publishing a release with a new tag (e.g. v0.2.1) builds and attaches the zip
   workflow_dispatch:      # or run it by hand from the Actions tab
 
 permissions:
@@ -23,8 +23,13 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt pyinstaller
 
-      - name: Build MediaOrg.exe
-        run: pyinstaller --noconfirm --onedir --console --name MediaOrg --collect-all pillow_heif mediaorg.py
+      - name: Build MediaOrg.exe (desktop app)
+        run: >
+          pyinstaller --noconfirm --onedir --windowed --name MediaOrg
+          --add-data "ui;ui"
+          --collect-all pillow_heif --collect-all webview
+          --hidden-import mediaorg
+          app.py
 
       - name: Bundle ffprobe (LGPL build) and docs
         shell: pwsh
@@ -35,7 +40,13 @@ jobs:
           Get-ChildItem ff -Recurse -Filter ffprobe.exe | Copy-Item -Destination dist/MediaOrg/tools/
           Get-ChildItem ff -Recurse -Filter LICENSE.txt | Select-Object -First 1 | Copy-Item -Destination dist/MediaOrg/tools/FFMPEG-LICENSE.txt
           Copy-Item README.md, LICENSE dist/MediaOrg/
-          & dist/MediaOrg/MediaOrg.exe --help
+
+      - name: Self-test the packaged app
+        shell: pwsh
+        run: |
+          $p = Start-Process dist/MediaOrg/MediaOrg.exe -ArgumentList "--selftest" -Wait -PassThru
+          Get-Content "$env:TEMP/mediaorg_selftest.txt"
+          if ($p.ExitCode -ne 0) { throw "self-test failed ($($p.ExitCode))" }
 
       - name: Zip
         shell: pwsh

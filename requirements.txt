@@ -1,3 +1,6 @@
 Pillow
 xxhash
 pillow-heif
+pywebview
+psutil
+nvidia-ml-py

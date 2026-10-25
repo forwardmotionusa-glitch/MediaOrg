@@ -32,7 +32,7 @@ from collections import Counter, defaultdict
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
-VERSION = "0.1.0"
+VERSION = "0.2.0"
 FROZEN = getattr(sys, "frozen", False)           # running as the packaged MediaOrg.exe
 if FROZEN:
     APP_DIR = Path(os.environ.get("LOCALAPPDATA", Path.home())) / "MediaOrg"   # writable, survives updates
@@ -43,6 +43,16 @@ else:
 DATA_DIR = APP_DIR / "data"
 REPORT_DIR = APP_DIR / "reports"
 CONFIG_PATH = DATA_DIR / "config.json"
+
+# --------------------------------------------------------------------------- live state for the dashboard
+STOP = threading.Event()          # set() asks a running index/apply to stop at the next safe point
+PROGRESS = {"phase": "idle", "done": 0, "total": 0, "bytes": 0, "rate": 0.0, "eta": None,
+            "current": "", "started": None}
+
+
+def set_progress(**kw):
+    PROGRESS.update(kw)
+
 
 # --------------------------------------------------------------------------- optional libs
 try:
@@ -134,6 +144,7 @@ CREATE TABLE IF NOT EXISTS files(
 CREATE TABLE IF NOT EXISTS plans(plan_id INTEGER PRIMARY KEY, created TEXT, settings TEXT, applied INTEGER DEFAULT 0);
 CREATE TABLE IF NOT EXISTS plan_ops(plan_id INTEGER, seq INTEGER, op TEXT, src TEXT, dst TEXT, grp TEXT, note TEXT);
 CREATE TABLE IF NOT EXISTS review(plan_id INTEGER, rel TEXT, reason TEXT, detail TEXT);
+CREATE TABLE IF NOT EXISTS decisions(rel TEXT PRIMARY KEY, action TEXT, value TEXT, ts TEXT);
 CREATE TABLE IF NOT EXISTS moves(batch INTEGER, seq INTEGER, op TEXT, src TEXT, dst TEXT, ts TEXT, undone INTEGER DEFAULT 0);
 CREATE INDEX IF NOT EXISTS ix_files_fp ON files(fp);
 """
@@ -453,7 +464,11 @@ def cmd_index(args, cfg):
     todo = []
     t0 = time.time()
     n_walk = 0
+    set_progress(phase="walking", done=0, total=0, bytes=0, rate=0.0, eta=None, current="", started=time.time())
     for dirpath, dirnames, filenames in os.walk(root):
+        if STOP.is_set():
+            break
+        set_progress(done=n_walk, current=os.path.relpath(dirpath, root))
         dirnames[:] = [d for d in dirnames if d.lower() not in SKIP_DIRS and not d.startswith("$")]
         for fn in filenames:
             full = os.path.join(dirpath, fn)
@@ -469,6 +484,12 @@ def cmd_index(args, cfg):
             todo.append((rel, st.st_size, st.st_mtime))
         if n_walk and n_walk % 5000 < len(filenames):
             print(f"  scanned {n_walk:,} files...", flush=True)
+    if STOP.is_set():
+        if EXIFTOOL:
+            EXIFTOOL.close()
+        set_progress(phase="stopped")
+        print("  Stopped while listing files. Nothing lost - scan again any time.")
+        return "stopped"
     print(f"  {n_walk:,} files on drive: {len(todo):,} new/changed, {len(seen) - len(todo):,} already indexed")
 
     cols = ["rel", "name", "ext", "kind", "size", "mtime", "date_taken", "date_source", "date_conf",
@@ -476,24 +497,36 @@ def cmd_index(args, cfg):
     sql = f"INSERT OR REPLACE INTO files({','.join(cols)}) VALUES({','.join('?' * len(cols))})"
     done, bytes_done = 0, 0
     t1 = time.time()
+    stopped = False
+    set_progress(phase="indexing", done=0, total=len(todo), bytes=0, rate=0.0, eta=None, started=t1)
     try:
         with ThreadPoolExecutor(max_workers=args.workers or cfg["workers"]) as pool:
-            for rec in pool.map(lambda x: analyze_file(root, *x), todo, chunksize=8):
-                con.execute(sql, [rec[c] for c in cols])
-                done += 1
-                bytes_done += rec["size"] or 0
-                if done % 250 == 0:
-                    con.commit()
-                    rate = done / max(time.time() - t1, 0.001)
-                    eta = (len(todo) - done) / max(rate, 0.001)
+            for i in range(0, len(todo), 64):
+                if STOP.is_set():
+                    stopped = True
+                    break
+                for rec in pool.map(lambda x: analyze_file(root, *x), todo[i:i + 64]):
+                    con.execute(sql, [rec[c] for c in cols])
+                    done += 1
+                    bytes_done += rec["size"] or 0
+                    PROGRESS["current"] = rec["rel"]
+                con.commit()
+                rate = done / max(time.time() - t1, 0.001)
+                eta = (len(todo) - done) / max(rate, 0.001)
+                set_progress(done=done, bytes=bytes_done, rate=rate, eta=eta)
+                if done % 256 == 0:
                     print(f"  indexed {done:,}/{len(todo):,}  ({rate:.0f} files/s, ~{eta / 60:.0f} min left)", flush=True)
     except KeyboardInterrupt:
-        print("\n  Stopped. Progress is saved - run index again to continue where it left off.")
+        stopped = True
     finally:
         con.commit()
         if EXIFTOOL:
             EXIFTOOL.close()
 
+    if stopped:
+        set_progress(phase="stopped")
+        print(f"  Stopped after {done:,} files. Progress is saved - scan again to continue where it left off.")
+        return "stopped"
     gone = [r for r in known if r not in seen]
     if gone and done == len(todo):
         con.executemany("DELETE FROM files WHERE rel=?", [(g,) for g in gone])
@@ -501,7 +534,9 @@ def cmd_index(args, cfg):
     meta_set(con, "last_index", dt.datetime.now().isoformat(timespec="seconds"))
     meta_set(con, "last_index_seconds", round(time.time() - t0, 1))
     con.commit()
+    set_progress(phase="indexed", done=done, total=len(todo))
     print(f"  done in {(time.time() - t0) / 60:.1f} min")
+    return "ok"
 
 
 # --------------------------------------------------------------------------- PLAN
@@ -537,6 +572,23 @@ def cmd_plan(args, cfg):
     plan_id = cur.lastrowid
     ops, review = [], []
     planned_dst = set()
+    dec = {r["rel"]: (r["action"], r["value"]) for r in con.execute("SELECT * FROM decisions")}
+
+    def dec_date(rel):
+        a = dec.get(rel)
+        if a and a[0] == "date":
+            try:
+                return dt.datetime.fromisoformat(a[1])
+            except (TypeError, ValueError):
+                return None
+        return None
+
+    def free_dir(path):
+        """For a 'rename on clash' decision: first 'name (2)', 'name (3)'... that is free."""
+        n = 2
+        while os.path.exists(os.path.join(root, f"{path} ({n})")) or f"{path} ({n})".lower() in planned_dst:
+            n += 1
+        return f"{path} ({n})"
 
     def add_review(rel, reason, detail=""):
         review.append((plan_id, rel, reason, detail))
@@ -563,13 +615,14 @@ def cmd_plan(args, cfg):
     # ---- named folders: move the whole folder as one unit (one instant rename)
     for anchor, files in sorted(units.items()):
         name = Path(anchor).name
-        if any(f["kind"] == "project" for f in files):
+        key = anchor + os.sep
+        if any(f["kind"] == "project" for f in files) and dec.get(key, ("",))[0] != "move":
             add_review(anchor + os.sep, "editing project inside",
                        "Folder has an editing project file; moving it would break the project's media links. Left in place.")
             continue
         good = [dt_of(f) for f in files if f["kind"] in MEDIA_KINDS and f["date_conf"] in ("high", "medium")]
         low = [dt_of(f) for f in files if f["kind"] in MEDIA_KINDS and f["date_conf"] == "low"]
-        dates = good or (low if allow_low else [])
+        dates = ([dec_date(key)] if dec_date(key) else None) or good or (low if allow_low else [])
         if not dates:
             if not any(f["kind"] in MEDIA_KINDS for f in files):
                 add_review(anchor + os.sep, "no media in folder", "Left in place.")
@@ -584,8 +637,10 @@ def cmd_plan(args, cfg):
         if (end - start).days > cfg["wide_span_days"]:
             note += f"  (WIDE SPAN {(end - start).days} days - check)"
         if os.path.exists(os.path.join(root, dst)) or dst.lower() in planned_dst:
-            add_review(anchor + os.sep, "destination folder already exists", dst)
-            continue
+            if dec.get(key, ("",))[0] != "rename":
+                add_review(anchor + os.sep, "destination folder already exists", dst)
+                continue
+            dst = free_dir(dst)
         planned_dst.add(dst.lower())
         ops.append(("dir", anchor, dst, "unit:" + anchor, note))
 
@@ -618,6 +673,8 @@ def cmd_plan(args, cfg):
             continue
         confs = [f for f in lead if f["date_conf"] in ("high", "medium")]
         pick = confs or ([f for f in lead if f["date_conf"] == "low"] if allow_low else [])
+        if dec_date(lead[0]["rel"]):
+            pick = [dict(lead[0], date_taken=dec_date(lead[0]["rel"]).isoformat())]
         if not pick:
             add_review(lead[0]["rel"], "only file-modified date",
                        "No date in metadata or filename" + (f" (+{len(files) - 1} linked files)" if len(files) > 1 else ""))
@@ -630,6 +687,10 @@ def cmd_plan(args, cfg):
             base = os.path.join(org_name, f"{d:%Y}", f"{d:%Y-%m-%d}")
         moves = [(f["rel"], os.path.join(base, f["name"])) for f in files]
         clash = [dst for _, dst in moves if dst.lower() in planned_dst or os.path.exists(os.path.join(root, dst))]
+        if clash and dec.get(lead[0]["rel"], ("",))[0] == "rename":
+            base = free_dir(base)          # same file names, sibling folder "date (2)"
+            moves = [(f["rel"], os.path.join(base, f["name"])) for f in files]
+            clash = [dst for _, dst in moves if dst.lower() in planned_dst or os.path.exists(os.path.join(root, dst))]
         if clash:
             add_review(lead[0]["rel"], "name clash at destination", clash[0])
             continue
@@ -719,7 +780,12 @@ def cmd_apply(args, cfg):
     moved = failed = 0
     seq = 0
     t0 = time.time()
-    for g in order:
+    set_progress(phase="applying", done=0, total=len(order), bytes=0, rate=0.0, eta=None, current="", started=t0)
+    for gi, g in enumerate(order):
+        if STOP.is_set():
+            print("  Stopped. Moves done so far are logged and can be undone.")
+            break
+        set_progress(done=gi, current=by_grp[g][0]["src"])
         done_here = []
         try:
             for o in by_grp[g]:
@@ -756,6 +822,7 @@ def cmd_apply(args, cfg):
     con.execute("UPDATE plans SET applied=1 WHERE plan_id=?", (plan["plan_id"],))
     con.commit()
     logf.close()
+    set_progress(phase="applied", done=len(order))
     print(f"Batch {batch}: moved {moved:,} items in {time.time() - t0:.0f}s, {failed:,} groups skipped (see review).")
     print(f"  Undo log on the drive: {log_path}")
     print(f"  To reverse:  mediaorg.py undo")
@@ -780,6 +847,7 @@ def cmd_undo(args, cfg):
             os.rename(s, d)
             rebase_paths(con, r["dst"], r["src"], r["op"] == "dir")
             con.execute("UPDATE moves SET undone=1 WHERE batch=? AND seq=?", (b, r["seq"]))
+            prune_empty(root, r["dst"], [])  # tidy date folders the undo emptied (empty folders only)
             ok += 1
         except Exception as e:
             bad += 1
@@ -983,7 +1051,8 @@ def menu(cfg):
                     print("Set the drive first (option 1).")
                     continue
                 ns.root = drive
-                cmd_index(ns, cfg)
+                if cmd_index(ns, cfg) == "stopped":
+                    continue
                 ns.root = None
                 cmd_plan(ns, cfg)
                 cmd_report(ns, cfg)
@@ -1048,7 +1117,8 @@ def main():
             p.add_argument("--prune-empty", action="store_true", help="remove source folders left empty")
     args = ap.parse_args()
     if args.cmd == "run":
-        cmd_index(args, cfg)
+        if cmd_index(args, cfg) == "stopped":
+            return
         args.root = None
         cmd_plan(args, cfg)
         cmd_report(args, cfg)
