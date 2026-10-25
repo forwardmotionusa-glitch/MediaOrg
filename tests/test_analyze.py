@@ -1,4 +1,4 @@
-"""
+﻿"""
 End-to-end check of phase 2 against a fake Ollama server: analysis rows, event names, and the plan using them.
 Uses real ffmpeg when it is installed (CI), otherwise stubs frame extraction.   Run:  python tests/test_analyze.py
 """
@@ -75,7 +75,7 @@ def main():
             for n in ("a.mp4", "b.mp4"):
                 (root / n).write_bytes(b"x")
             mo.find_tool = lambda name: "ffmpeg-stub" if name == "ffmpeg" else None
-            analyze.extract_frames = lambda ff, src, dur, n, out: [_jpg(Path(out) / f"f{i}.jpg") for i in range(n)]
+            analyze.extract_frames = lambda ff, src, dur, n, out, hw=False: [_jpg(Path(out) / f"f{i}.jpg") for i in range(n)]
 
         db = str(td / "t.db")
         con = mo.open_db(db)
@@ -122,12 +122,13 @@ def main():
         con.close()
         (root / "bad.mp4").write_bytes(b"x")
         cfg_one = dict(cfg, frames_per_clip=3)
-        orig = analyze.describe
+        orig, orig_frames = analyze.describe, analyze.extract_frames
         analyze.describe = lambda *a, **k: (_ for _ in ()).throw(analyze.OllamaError(400, "bad thing"))
+        analyze.extract_frames = lambda ff, src, dur, n, out, hw=False: [_jpg(Path(out) / "f0.jpg")]   # (the fake clip isn't real video)
         try:
             r = analyze.run(cfg_one, db, threading.Event())
         finally:
-            analyze.describe = orig
+            analyze.describe, analyze.extract_frames = orig, orig_frames
         assert r["errors"] == 1 and r["todo"] == 1, r
         con = mo.open_db(db)
         row = con.execute("SELECT status, error FROM analysis WHERE rel='bad.mp4'").fetchone()

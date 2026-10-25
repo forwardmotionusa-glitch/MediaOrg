@@ -21,6 +21,7 @@ import time
 import urllib.error
 import urllib.request
 from collections import defaultdict
+from concurrent.futures import ThreadPoolExecutor
 
 import mediaorg as mo
 
@@ -135,27 +136,32 @@ def _run(cmd, timeout):
     return subprocess.run(cmd, capture_output=True, timeout=timeout, creationflags=mo.NO_WINDOW)
 
 
-def extract_frames(ffmpeg, src, duration, n, outdir):
-    """n evenly spaced JPEGs (768 px wide). GPU decode first; falls back to CPU for this and later clips."""
+def want_gpu_decode(r):
+    """GPU decode has a ~1 s start-up cost, so it only pays for big or HEVC/AV1 video; small H.264 is faster on the CPU."""
+    return (r.get("width") or 0) >= 2560 or (r.get("codec") or "") in ("hevc", "av1", "vp9") and (r.get("size") or 0) > 100e6
+
+
+def extract_frames(ffmpeg, src, duration, n, outdir, hw=False):
+    """n evenly spaced JPEGs (768 px wide) from ONE ffmpeg run (one start-up, one open per frame). With hw, tries GPU
+    decoding first and falls back to the CPU (and then stops trying the GPU for this session)."""
     times = [(duration or 0) * (i + 0.5) / n for i in range(n)] if duration else [0.0]
-    out = []
-    for i, t in enumerate(times):
-        dst = os.path.join(outdir, f"f{i}.jpg")
-        for hw in ((True, False) if _hw_ok[0] else (False,)):
-            cmd = [ffmpeg, "-hide_banner", "-loglevel", "error", "-y"]
-            if hw:
-                cmd += ["-hwaccel", "cuda"]
-            cmd += ["-ss", f"{t:.2f}", "-i", src, "-frames:v", "1", "-vf", "scale=768:-2", "-q:v", "4", dst]
-            try:
-                ok = _run(cmd, 120).returncode == 0 and os.path.getsize(dst) > 0
-            except Exception:
-                ok = False
-            if ok:
-                out.append(dst)
-                break
-            if hw:
-                _hw_ok[0] = False
-    return out
+    outs = [os.path.join(outdir, f"f{i}.jpg") for i in range(len(times))]
+    for use_hw in ((True, False) if hw and _hw_ok[0] else (False,)):
+        cmd = [ffmpeg, "-hide_banner", "-loglevel", "error", "-y"]
+        for t in times:
+            cmd += (["-hwaccel", "cuda"] if use_hw else []) + ["-ss", f"{t:.2f}", "-i", src]
+        for i, o in enumerate(outs):
+            cmd += ["-map", f"{i}:v:0", "-frames:v", "1", "-vf", "scale=768:-2", "-q:v", "4", o]
+        try:
+            _run(cmd, 300)
+        except Exception:
+            pass
+        got = [o for o in outs if os.path.isfile(o) and os.path.getsize(o) > 0]
+        if got:
+            return got
+        if use_hw:
+            _hw_ok[0] = False
+    return []
 
 
 def transcribe(cfg, ffmpeg, src, tmp):
@@ -276,7 +282,7 @@ def name_event(cfg, day, descs):
 def _targets(con, cfg):
     kinds = ["video", "360video"] + (["photo"] if cfg.get("analyze_photos") else [])
     q = ",".join("?" * len(kinds))
-    rows = con.execute(f"""SELECT f.rel, f.name, f.ext, f.kind, f.duration, f.insta_key, f.date_taken
+    rows = con.execute(f"""SELECT f.rel, f.name, f.ext, f.kind, f.duration, f.insta_key, f.date_taken, f.width, f.height, f.codec, f.size
                            FROM files f LEFT JOIN analysis a ON a.rel = f.rel
                            WHERE f.kind IN ({q}) AND (a.rel IS NULL OR (a.status IN ('error', 'skipped') AND a.tries < ?))
                            ORDER BY f.date_taken""", (*kinds, MAX_TRIES)).fetchall()
@@ -309,26 +315,49 @@ def run(cfg, db_path, stop):
     t0 = time.time()
     mo.set_progress(phase="analyzing", done=0, total=len(todo), bytes=0, rate=0.0, eta=None, current="", started=t0)
     fails_in_a_row = 0
+
+    def prepare(r, src):
+        """Worker thread: frames + transcript for one clip (disk and ffmpeg bound), while the GPU describes the previous ones."""
+        tmp = tempfile.mkdtemp(prefix="mediaorg_")
+        try:
+            frames = extract_frames(ffmpeg, src, r["duration"], max(1, int(cfg["frames_per_clip"])), tmp, hw=want_gpu_decode(r))
+            if not frames:
+                raise ValueError("could not read any frames")
+            return tmp, frames, transcribe(cfg, ffmpeg, src, tmp)
+        except BaseException:
+            shutil.rmtree(tmp, ignore_errors=True)
+            raise
+
+    workers = max(1, int(cfg.get("analysis_workers", 3)))
+    pool = ThreadPoolExecutor(max_workers=workers)
+    sources, futures = {}, {}
+
+    def submit(i):
+        if i < len(todo):
+            sources[i] = _source_for(con, root, todo[i])
+            if sources[i] and os.path.isfile(sources[i]):
+                futures[i] = pool.submit(prepare, todo[i], sources[i])
+
+    for i in range(min(workers * 2, len(todo))):        # keep a few clips prepared ahead
+        submit(i)
     for i, r in enumerate(todo):
         if stop.is_set():
             break
+        submit(i + workers * 2)
         mo.set_progress(current=r["rel"])
         now = dt.datetime.now().isoformat(timespec="seconds")
-        src = _source_for(con, root, r)
+        src = sources.pop(i, None)
         prev = con.execute("SELECT tries FROM analysis WHERE rel=?", (r["rel"],)).fetchone()
         tries = (prev[0] if prev else 0) + 1
-        if not src or not os.path.isfile(src):
+        if i not in futures:
             con.execute("INSERT OR REPLACE INTO analysis(rel,status,error,tries,model,ts) VALUES(?,?,?,?,?,?)",
                         (r["rel"], "skipped", "file not found", tries, cfg["vision_model"], now))
             counts["skipped"] += 1
         else:
+            tmp = None
             try:
-                with tempfile.TemporaryDirectory(prefix="mediaorg_") as tmp:
-                    frames = extract_frames(ffmpeg, src, r["duration"], max(1, int(cfg["frames_per_clip"])), tmp)
-                    if not frames:
-                        raise ValueError("could not read any frames")
-                    text = transcribe(cfg, ffmpeg, src, tmp)
-                    desc, tags = describe(cfg, frames, text)
+                tmp, frames, text = futures.pop(i).result()
+                desc, tags = describe(cfg, frames, text)
                 con.execute("INSERT OR REPLACE INTO analysis VALUES(?,?,?,?,?,?,?,?,?)",
                             (r["rel"], "ok", desc, ", ".join(tags), text, None, tries, cfg["vision_model"], now))
                 counts["analyzed"] += 1
@@ -338,18 +367,26 @@ def run(cfg, db_path, stop):
                 fails_in_a_row += 1
                 if fails_in_a_row >= 3:
                     con.commit()
+                    pool.shutdown(wait=False, cancel_futures=True)
                     raise Unavailable(f"Ollama stopped responding ({getattr(e, 'reason', e)})")
                 continue
             except Exception as e:
                 con.execute("INSERT OR REPLACE INTO analysis(rel,status,error,tries,model,ts) VALUES(?,?,?,?,?,?)",
                             (r["rel"], "error", f"{type(e).__name__}: {e}"[:300], tries, cfg["vision_model"], now))
                 counts["errors"] += 1
+            finally:
+                if tmp:
+                    shutil.rmtree(tmp, ignore_errors=True)
         con.commit()
         done = i + 1
         rate = done / max(time.time() - t0, 0.001)
         mo.set_progress(done=done, rate=rate, eta=(len(todo) - done) / max(rate, 0.001))
         if done % 20 == 0:
             _log(f"  described {done:,}/{len(todo):,} clips ({rate * 60:.1f}/min)")
+    pool.shutdown(wait=False, cancel_futures=True)
+    for f in futures.values():                          # clips prepared but not used (stopped early): clean their temp folders
+        if f.done() and not f.cancelled() and not f.exception():
+            shutil.rmtree(f.result()[0], ignore_errors=True)
     if not stop.is_set():
         counts.update(build_events(cfg, con, stop))
     con.commit()

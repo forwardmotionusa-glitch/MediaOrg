@@ -1,4 +1,4 @@
-"""
+﻿"""
 The overnight chain through the real Api: scan -> analyze -> plan -> report, then again with apply, on a throwaway
 folder and a fake Ollama. Frame extraction is stubbed (no ffmpeg needed).   Run:  python tests/test_overnight.py
 """
@@ -33,7 +33,7 @@ def main():
         mo.REPORT_DIR = td / "reports"
         mo.CONFIG_PATH = mo.DATA_DIR / "config.json"
         mo.find_tool = lambda name: "ffmpeg-stub" if name == "ffmpeg" else None
-        analyze.extract_frames = lambda ff, src, dur, n, out: [ta._jpg(Path(out) / f"f{i}.jpg") for i in range(n)]
+        analyze.extract_frames = lambda ff, src, dur, n, out, hw=False: [ta._jpg(Path(out) / f"f{i}.jpg") for i in range(n)]
         import app
         drive = td / "drive"
         drive.mkdir()

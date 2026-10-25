@@ -110,6 +110,7 @@ DEFAULT_CONFIG = {
     "transcribe": True,                   # Whisper transcripts, when faster-whisper or whisper-cli is installed
     "whisper_model": "small",
     "analyze_photos": False,
+    "analysis_workers": 3,                # clips prepared (frames + transcript) in parallel while the GPU describes
     "auto_setup": True,                   # on start, download Ollama and the vision model if they're missing
     "generic_folder_names": [
         "dcim", "camera", "camera roll", "camera uploads", "photos", "pictures", "videos", "video",
