@@ -605,8 +605,44 @@ class Api:
         return {"ok": True}
 
 
+# --------------------------------------------------------------------------- startup helpers
+def unblock_bundle():
+    """Windows marks files extracted from a downloaded zip as "from the internet" (the Zone.Identifier
+    stream). .NET then refuses to load the window's DLLs. Clear that mark from MediaOrg's own bundled
+    files only - the same thing as ticking "Unblock" on the zip. Returns how many files were unblocked."""
+    if os.name != "nt" or not mo.FROZEN:
+        return 0
+    n = 0
+    base = Path(sys.executable).resolve().parent
+    for dirpath, _, files in os.walk(base):
+        for f in files:
+            if f.lower().endswith((".dll", ".exe", ".pyd", ".config")):
+                try:
+                    os.remove(os.path.join(dirpath, f) + ":Zone.Identifier")
+                    n += 1
+                except OSError:
+                    pass
+    return n
+
+
+def fatal_dialog(title, text):
+    """The packaged app has no console, so show startup problems in a normal Windows message box."""
+    log = mo.APP_DIR / "startup_error.txt"
+    try:
+        mo.APP_DIR.mkdir(parents=True, exist_ok=True)
+        log.write_text(text, encoding="utf-8")
+    except OSError:
+        pass
+    if os.name == "nt":
+        import ctypes
+        ctypes.windll.user32.MessageBoxW(None, f"{text}\n\nDetails saved to:\n{log}", title, 0x10)
+    else:
+        print(title, text, sep="\n")
+
+
 # --------------------------------------------------------------------------- main
 def main():
+    unblocked = unblock_bundle()
     if "--selftest" in sys.argv:
         # Used by the build: proves the GUI stack and UI files are bundled. Writes its result to a file
         # because the windowed exe has no console.
@@ -619,7 +655,7 @@ def main():
             api = Api()
             st = api.state()
             msg = (f"selftest ok {mo.VERSION} ffprobe={bool(mo.FFPROBE)} psutil={bool(psutil)} "
-                   f"nvml={bool(pynvml)} cpu={st['hw'].get('cpu_name')}")
+                   f"nvml={bool(pynvml)} unblocked={unblocked} cpu={st['hw'].get('cpu_name')}")
             out.write_text(msg, encoding="utf-8")
             print(msg)
             return 0
@@ -627,11 +663,23 @@ def main():
             out.write_text("selftest FAILED\n" + traceback.format_exc(), encoding="utf-8")
             traceback.print_exc()
             return 1
-    import webview
-    api = Api()
-    api._window = webview.create_window(f"MediaOrg {mo.VERSION}", str(UI_DIR / "index.html"), js_api=api,
-                                       width=1360, height=900, min_size=(900, 640), background_color="#0E1014")
-    webview.start(http_server=True, debug="--debug" in sys.argv)
+    try:
+        import webview
+        api = Api()
+        api._window = webview.create_window(f"MediaOrg {mo.VERSION}", str(UI_DIR / "index.html"), js_api=api,
+                                           width=1360, height=900, min_size=(900, 640), background_color="#0E1014")
+        webview.start(http_server=True, debug="--debug" in sys.argv)
+    except Exception:
+        tb = traceback.format_exc()
+        hint = "MediaOrg couldn't open its window."
+        if "Python.Runtime" in tb or "0x80131515" in tb:
+            hint += ("\n\nWindows is blocking files from the downloaded zip. Delete this folder, right-click the "
+                     "zip > Properties > tick Unblock > OK, then extract it again.")
+        elif "WebView2" in tb or "EdgeChromium" in tb:
+            hint += ("\n\nThe Microsoft Edge WebView2 Runtime seems to be missing. Install it from "
+                     "https://developer.microsoft.com/microsoft-edge/webview2/ and try again.")
+        fatal_dialog("MediaOrg", f"{hint}\n\n{tb[-1500:]}")
+        return 1
     mo.STOP.set()  # window closed: let a running scan stop at its next safe point
     return 0
 
