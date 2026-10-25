@@ -643,6 +643,7 @@ def fatal_dialog(title, text):
 UITEST_JS = r"""
 (async () => {
   const r = {};
+  r.bridge_global = window.chrome && window.chrome.webview ? "ok" : "ERR window.chrome.webview missing (a page global is shadowing window.chrome?)";
   const calls = [["state", []], ["review", []], ["plan_view", []], ["edit_queue", ["all"]],
                  ["get_settings", []], ["report_text", []]];
   for (const [m, a] of calls) {
@@ -690,7 +691,7 @@ def uitest():
 
     webview.start(drive, http_server=True)
     ok = (not result.get("error") and all(str(result.get(k, "")).startswith("ok") for k in
-          ("state", "review", "plan_view", "edit_queue", "get_settings", "report_text"))
+          ("bridge_global", "state", "review", "plan_view", "edit_queue", "get_settings", "report_text"))
           and "Settings" in result.get("settings_page", "") and not result.get("errors"))
     return 0 if ok else 1
 

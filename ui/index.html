@@ -180,16 +180,19 @@ async function poll() {
     if (poll.fail === 3) { window.__errors.push("state: " + (e && e.message)); toast("Can't reach the app: " + (e && e.message), true); }
     setTimeout(poll, 1500); return;
   }
-  chrome();
-  if (page === "dashboard") updateDash();
-  const wasRunning = poll.running; poll.running = S.job.running;
-  if (wasRunning && !S.job.running) {           // a job just finished
-    if (S.job.error) toast(S.job.error, true); else toast(`${S.job.name} finished`);
-    if (page !== "dashboard") route(true);
-  }
+  try {                                          // a rendering bug must never stop the polling loop
+    renderShell();
+    if (page === "dashboard") updateDash();
+    const wasRunning = poll.running; poll.running = S.job.running;
+    if (wasRunning && !S.job.running) {           // a job just finished
+      if (S.job.error) toast(S.job.error, true); else toast(`${S.job.name} finished`);
+      if (page !== "dashboard") route(true);
+    }
+  } catch (e) { window.__errors.push("render: " + (e && e.message)); }
   setTimeout(poll, 1000);
 }
-function chrome() {
+// Never name a global "chrome": it would replace window.chrome, which pywebview's WebView2 bridge calls through.
+function renderShell() {
   $("#ver").textContent = "v" + S.version;
   const open = (S.review || {}).open_total || 0;
   setHTML("navbadge", open ? `<span class="badge">${fmt(open)}</span>` : "");
