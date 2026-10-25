@@ -32,7 +32,7 @@ from collections import Counter, defaultdict
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
-VERSION = "0.2.1"
+VERSION = "0.3.0"
 FROZEN = getattr(sys, "frozen", False)           # running as the packaged MediaOrg.exe
 if FROZEN:
     APP_DIR = Path(os.environ.get("LOCALAPPDATA", Path.home())) / "MediaOrg"   # writable, survives updates
@@ -100,6 +100,15 @@ DEFAULT_CONFIG = {
     "session_gap_hours": 3,
     "wide_span_days": 60,
     "workers": 4,                         # HDD-friendly; raise for NVMe
+    # phase 2: local analysis (Ollama vision model + optional Whisper), see analyze.py
+    "use_ai_titles": True,                # name loose-file day folders "2024-08-28 Beach day" when confident
+    "ai_title_min_confidence": 0.6,       # lower-confidence names are flagged for review instead of applied
+    "vision_model": "qwen2.5vl:7b",
+    "ollama_url": "http://127.0.0.1:11434",
+    "frames_per_clip": 4,
+    "transcribe": True,                   # Whisper transcripts, when faster-whisper or whisper-cli is installed
+    "whisper_model": "small",
+    "analyze_photos": False,
     "generic_folder_names": [
         "dcim", "camera", "camera roll", "camera uploads", "photos", "pictures", "videos", "video",
         "movies", "images", "img", "media", "footage", "raw", "download", "downloads", "new folder",
@@ -146,6 +155,9 @@ CREATE TABLE IF NOT EXISTS plan_ops(plan_id INTEGER, seq INTEGER, op TEXT, src T
 CREATE TABLE IF NOT EXISTS review(plan_id INTEGER, rel TEXT, reason TEXT, detail TEXT);
 CREATE TABLE IF NOT EXISTS decisions(rel TEXT PRIMARY KEY, action TEXT, value TEXT, ts TEXT);
 CREATE TABLE IF NOT EXISTS moves(batch INTEGER, seq INTEGER, op TEXT, src TEXT, dst TEXT, ts TEXT, undone INTEGER DEFAULT 0);
+CREATE TABLE IF NOT EXISTS analysis(rel TEXT PRIMARY KEY, status TEXT, description TEXT, tags TEXT, transcript TEXT,
+  error TEXT, tries INTEGER DEFAULT 0, model TEXT, ts TEXT);
+CREATE TABLE IF NOT EXISTS events(day TEXT PRIMARY KEY, title TEXT, summary TEXT, confidence REAL, clips INTEGER, ts TEXT);
 CREATE INDEX IF NOT EXISTS ix_files_fp ON files(fp);
 """
 
@@ -593,6 +605,20 @@ def cmd_plan(args, cfg):
     def add_review(rel, reason, detail=""):
         review.append((plan_id, rel, reason, detail))
 
+    titles = {}                       # day -> confident AI event name from analyze.py
+    if cfg.get("use_ai_titles", True):
+        for r in con.execute("SELECT day, title, confidence FROM events"):
+            if r["title"] and (r["confidence"] or 0) >= cfg.get("ai_title_min_confidence", 0.6):
+                titles[r["day"]] = r["title"]
+
+    def day_dir(d):
+        """'2024-08-28', or '2024-08-28 Beach day' - unless the plain-date folder already exists (keep the day together)."""
+        plain = f"{d:%Y-%m-%d}"
+        t = titles.get(plain)
+        if not t or os.path.exists(os.path.join(root, org_name, f"{d:%Y}", plain)):
+            return plain
+        return f"{plain} {safe_name(t)}"
+
     def dt_of(r):
         return dt.datetime.fromisoformat(r["date_taken"]) if r["date_taken"] else None
 
@@ -681,10 +707,10 @@ def cmd_plan(args, cfg):
             continue
         d = min(dt_of(f) for f in pick)
         if is360:
-            base = (os.path.join(org_name, f"{d:%Y}", f"{d:%Y-%m-%d}", "360") if insta_mode == "together"
-                    else os.path.join(org_name, "360", f"{d:%Y}", f"{d:%Y-%m-%d}"))
+            base = (os.path.join(org_name, f"{d:%Y}", day_dir(d), "360") if insta_mode == "together"
+                    else os.path.join(org_name, "360", f"{d:%Y}", day_dir(d)))
         else:
-            base = os.path.join(org_name, f"{d:%Y}", f"{d:%Y-%m-%d}")
+            base = os.path.join(org_name, f"{d:%Y}", day_dir(d))
         moves = [(f["rel"], os.path.join(base, f["name"])) for f in files]
         clash = [dst for _, dst in moves if dst.lower() in planned_dst or os.path.exists(os.path.join(root, dst))]
         if clash and dec.get(lead[0]["rel"], ("",))[0] == "rename":

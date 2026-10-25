@@ -38,8 +38,17 @@ jobs:
           Expand-Archive ff.zip -DestinationPath ff
           New-Item -ItemType Directory -Force dist/MediaOrg/tools | Out-Null
           Get-ChildItem ff -Recurse -Filter ffprobe.exe | Copy-Item -Destination dist/MediaOrg/tools/
+          Get-ChildItem ff -Recurse -Filter ffmpeg.exe | Copy-Item -Destination dist/MediaOrg/tools/   # phase 2: keyframes (GPU decode)
           Get-ChildItem ff -Recurse -Filter LICENSE.txt | Select-Object -First 1 | Copy-Item -Destination dist/MediaOrg/tools/FFMPEG-LICENSE.txt
           Copy-Item README.md, LICENSE dist/MediaOrg/
+
+      - name: Phase 2 tests (real ffmpeg, fake Ollama)
+        timeout-minutes: 5
+        shell: pwsh
+        run: |
+          $env:PATH = "$PWD/dist/MediaOrg/tools;$env:PATH"
+          python tests/test_analyze.py
+          python tests/test_overnight.py
 
       - name: Self-test the packaged app (as if extracted from a downloaded zip)
         timeout-minutes: 5
