@@ -50,7 +50,9 @@ jobs:
 
       - name: Zip
         shell: pwsh
-        run: Compress-Archive -Path dist/MediaOrg -DestinationPath "MediaOrg-${{ github.ref_name }}-windows.zip"
+        run: |
+          $name = "${{ github.ref_name }}" -replace '[\\/:]', '-'
+          Compress-Archive -Path dist/MediaOrg -DestinationPath "MediaOrg-$name-windows.zip"
 
       - uses: actions/upload-artifact@v4
         with:
