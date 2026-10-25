@@ -25,6 +25,7 @@ import traceback
 from pathlib import Path
 
 import analyze
+import components
 import mediaorg as mo
 
 try:
@@ -277,7 +278,7 @@ class Api:
     def state(self):
         drive = self._drive()
         out = {"version": mo.VERSION, "drive": drive, "job": dict(self._job), "hw": self._hw.state(),
-               "progress": dict(mo.PROGRESS), "log": list(LOG)[-60:][::-1], "data_dir": str(mo.APP_DIR)}
+               "progress": dict(mo.PROGRESS), "setup": dict(components.STATE), "log": list(LOG)[-60:][::-1], "data_dir": str(mo.APP_DIR)}
         p = out["progress"]
         p["pct"] = round(100 * p["done"] / p["total"], 1) if p.get("total") else 0
         if drive and os.path.isdir(drive):
@@ -363,6 +364,18 @@ class Api:
 
     def analysis_setup(self):
         return analyze.setup_status(self._cfg)
+
+    def install_components(self):
+        """Download and set up Ollama and the vision model (what's already there is skipped)."""
+        if components.STATE["running"]:
+            return {"ok": False, "error": "Setup is already running."}
+        threading.Thread(target=components.ensure, args=(self._cfg,), daemon=True).start()
+        return {"ok": True}
+
+    def auto_setup(self):
+        """On start: fetch anything missing in the background, unless switched off in Settings."""
+        if self._cfg.get("auto_setup", True):
+            self.install_components()
 
     def start_analysis(self):
         def go():
@@ -706,6 +719,7 @@ class Api:
             cfg["workers"] = min(32, max(1, int(new["workers"])))
             cfg["use_ai_titles"] = bool(new.get("use_ai_titles"))
             cfg["transcribe"] = bool(new.get("transcribe"))
+            cfg["auto_setup"] = bool(new.get("auto_setup"))
             cfg["vision_model"] = str(new.get("vision_model") or cfg["vision_model"]).strip()
             cfg["frames_per_clip"] = min(12, max(1, int(new.get("frames_per_clip") or cfg["frames_per_clip"])))
             names = [x.strip().lower() for x in str(new.get("generic_folder_names", "")).splitlines() if x.strip()]
@@ -838,6 +852,7 @@ def main():
     try:
         import webview
         api = Api()
+        api.auto_setup()
         api._window = webview.create_window(f"MediaOrg {mo.VERSION}", str(UI_DIR / "index.html"), js_api=api,
                                            width=1360, height=900, min_size=(900, 640), background_color="#0E1014")
         webview.start(http_server=True, debug="--debug" in sys.argv)

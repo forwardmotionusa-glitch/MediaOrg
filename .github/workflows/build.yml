@@ -49,6 +49,7 @@ jobs:
           $env:PATH = "$PWD/dist/MediaOrg/tools;$env:PATH"
           python tests/test_analyze.py
           python tests/test_overnight.py
+          python tests/test_components.py
 
       - name: Self-test the packaged app (as if extracted from a downloaded zip)
         timeout-minutes: 5

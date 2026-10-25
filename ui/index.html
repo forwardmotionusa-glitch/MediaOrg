@@ -276,14 +276,20 @@ async function startNight() {
   if (!await confirmBox(S.overnight && S.overnight.pending ? "Resume the overnight run?" : "Start the overnight run?", body, "Start")) return;
   const r = await call("overnight_start", NIGHT_APPLY); if (r && r.ok) toast("Overnight run started. Sleep well.");
 }
+async function installComponents() { const r = await call("install_components"); if (r && r.ok) toast("Setting up Ollama and the vision model…"); }
 async function analyzeNow() { const r = await call("start_analysis"); if (r && r.ok) toast("Analyzing…"); }
 function updateNight() {
   const running = S.job.running, an = S.analysis || {}, on = S.overnight || {};
   const bad = SETUP ? SETUP.items.filter(i => !i.ok && i.required) : [], opt = SETUP ? SETUP.items.filter(i => !i.ok && !i.required) : [];
   const ready = SETUP && SETUP.ready;
-  const status = !SETUP ? `<div class="small">Checking this PC…</div>`
+  const su = S.setup || {};
+  if (updateNight.wasSetup && !su.running) refreshSetup();       // setup just finished: re-check what's installed
+  updateNight.wasSetup = su.running;
+  const status = su.running ? `<div class="small"><b>Setting up (one time, runs by itself)</b></div><div class="small">${esc(su.message)}</div><div class="bar" style="max-width:420px"><div style="width:${su.pct}%;background:#9B7BFF"></div></div>`
+    : su.error ? `<div class="small bad">Setup problem: ${esc(su.error)}</div><div><button class="btn sm" onclick="installComponents()">Try again</button></div>`
+    : !SETUP ? `<div class="small">Checking this PC…</div>`
     : ready ? `<div class="small good">✓ Ready: ffmpeg, Ollama and ${esc((SETUP.items.find(i => i.key === "model") || {}).label || "the model")}${opt.length ? ` · optional: ${esc(opt.map(i => i.label).join(", "))} not set up` : ""}</div>`
-    : `<div class="small bad">Set this up before bed:</div>${bad.map(i => `<div class="small"><b>${esc(i.label)}</b>: ${esc(i.detail)}</div>`).join("")}`;
+    : `<div class="small bad">Still needed:</div>${bad.map(i => `<div class="small"><b>${esc(i.label)}</b>: ${esc(i.detail)}</div>`).join("")}<div><button class="btn sm" onclick="installComponents()">Download &amp; install now</button></div>`;
   setHTML("night", `<div style="display:flex;gap:16px;align-items:center;flex:2 1 380px">${MOON}<div style="display:flex;flex-direction:column;gap:6px">
       <h2>Overnight run</h2>
       <div class="sub">${on.pending && !running ? "The last overnight run was interrupted. Resume to pick up where it stopped." : "Scan, describe every clip on the GPU, name each day's event and build the plan. It never stops to ask: anything unsure waits for you in Action items."}</div>
@@ -500,6 +506,7 @@ async function renderSettings() {
         <label class="f">Frames per clip<input type="number" name="frames_per_clip" min="1" max="12" value="${esc(cfg.frames_per_clip)}"></label>
       </div>
       <label class="row" style="gap:10px;min-height:44px"><input type="checkbox" name="use_ai_titles" ${cfg.use_ai_titles ? "checked" : ""} style="width:18px;height:18px;accent-color:var(--blue)"> Name day folders from what the analysis sees (e.g. "2024-08-28 Beach day"); unsure names keep just the date</label>
+      <label class="row" style="gap:10px;min-height:44px"><input type="checkbox" name="auto_setup" ${cfg.auto_setup ? "checked" : ""} style="width:18px;height:18px;accent-color:var(--blue)"> Download Ollama and the vision model automatically when MediaOrg starts, if they're missing (about 8 GB, once)</label>
       <label class="row" style="gap:10px;min-height:44px"><input type="checkbox" name="transcribe" ${cfg.transcribe ? "checked" : ""} style="width:18px;height:18px;accent-color:var(--blue)"> Use speech transcripts when Whisper is installed</label>
       <label class="f">Generic folder names, one per line. Files in these are sorted by date; any other folder name is treated as a named project and kept whole.
         <textarea name="generic_folder_names" rows="12">${esc((cfg.generic_folder_names || []).join("\n"))}</textarea></label>
@@ -510,7 +517,7 @@ async function saveSettings(e) {
   e.preventDefault();
   const f = new FormData(e.target), o = Object.fromEntries(f.entries());
   o.move_low_confidence_dates = f.get("move_low_confidence_dates") === "on";
-  o.use_ai_titles = f.get("use_ai_titles") === "on"; o.transcribe = f.get("transcribe") === "on";
+  o.use_ai_titles = f.get("use_ai_titles") === "on"; o.transcribe = f.get("transcribe") === "on"; o.auto_setup = f.get("auto_setup") === "on";
   const r = await call("save_settings", o); if (r && r.ok) toast("Settings saved");
 }
 
