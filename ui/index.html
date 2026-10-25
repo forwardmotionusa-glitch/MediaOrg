@@ -142,6 +142,9 @@ const api = new Proxy({}, {get: (_, m) => (...a) =>
   DEV ? fetch("/api/" + m, {method: "POST", body: JSON.stringify(a)}).then(r => r.json())
       : window.pywebview.api[m](...a)});
 
+window.__errors = [];
+window.addEventListener("error", e => { window.__errors.push(String(e.message)); toast("Something went wrong: " + e.message, true); });
+window.addEventListener("unhandledrejection", e => { const m = e.reason && (e.reason.message || e.reason) || "unknown"; window.__errors.push(String(m)); toast("Something went wrong: " + m, true); });
 const $ = s => document.querySelector(s);
 const esc = v => String(v ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 const fmt = n => Number(n || 0).toLocaleString();
@@ -171,17 +174,25 @@ const CAM_COLOR = {"360": "var(--purple)", Phone: "var(--text)", GoPro: "var(--b
 /* ---------- state + polling ---------- */
 let S = null, page = "", sub = "";
 async function poll() {
-  try { S = await api.state(); } catch (e) { setTimeout(poll, 1500); return; }
-  chrome();
-  if (page === "dashboard") updateDash();
-  const wasRunning = poll.running; poll.running = S.job.running;
-  if (wasRunning && !S.job.running) {           // a job just finished
-    if (S.job.error) toast(S.job.error, true); else toast(`${S.job.name} finished`);
-    if (page !== "dashboard") route(true);
+  try { S = await api.state(); poll.fail = 0; }
+  catch (e) {
+    poll.fail = (poll.fail || 0) + 1;
+    if (poll.fail === 3) { window.__errors.push("state: " + (e && e.message)); toast("Can't reach the app: " + (e && e.message), true); }
+    setTimeout(poll, 1500); return;
   }
+  try {                                          // a rendering bug must never stop the polling loop
+    renderShell();
+    if (page === "dashboard") updateDash();
+    const wasRunning = poll.running; poll.running = S.job.running;
+    if (wasRunning && !S.job.running) {           // a job just finished
+      if (S.job.error) toast(S.job.error, true); else toast(`${S.job.name} finished`);
+      if (page !== "dashboard") route(true);
+    }
+  } catch (e) { window.__errors.push("render: " + (e && e.message)); }
   setTimeout(poll, 1000);
 }
-function chrome() {
+// Never name a global "chrome": it would replace window.chrome, which pywebview's WebView2 bridge calls through.
+function renderShell() {
   $("#ver").textContent = "v" + S.version;
   const open = (S.review || {}).open_total || 0;
   setHTML("navbadge", open ? `<span class="badge">${fmt(open)}</span>` : "");
@@ -214,7 +225,11 @@ async function route(keep) {
   const changed = p !== page; page = p; sub = s || "";
   document.querySelectorAll(".nav").forEach(a => a.classList.toggle("on", a.dataset.p === page));
   const fn = {dashboard: renderDash, review: renderReview, plan: renderPlan, queue: renderQueue, reports: renderReports, settings: renderSettings}[page] || renderDash;
-  await fn();
+  try { await fn(); }
+  catch (e) {
+    window.__errors.push(String(e && e.message || e));
+    $("#main").innerHTML = `<header class="top"><h1>Couldn't load this screen</h1></header><div class="panel"><div class="sub">MediaOrg's window couldn't get data from the app. Please copy this and send it to Claude:</div><pre class="report">${esc((e && e.name) + ": " + (e && e.message) + "\n" + (e && e.stack || ""))}</pre></div>`;
+  }
   if (changed && !keep) $("#main").focus({preventScroll: true});
 }
 

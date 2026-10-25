@@ -41,12 +41,26 @@ jobs:
           Get-ChildItem ff -Recurse -Filter LICENSE.txt | Select-Object -First 1 | Copy-Item -Destination dist/MediaOrg/tools/FFMPEG-LICENSE.txt
           Copy-Item README.md, LICENSE dist/MediaOrg/
 
-      - name: Self-test the packaged app
+      - name: Self-test the packaged app (as if extracted from a downloaded zip)
+        timeout-minutes: 5
         shell: pwsh
         run: |
+          # Mark every file "from the internet" like a browser download does, so the test catches blocked-DLL problems
+          # (the exe itself is left unmarked so Windows doesn't show a security prompt on the headless runner)
+          Get-ChildItem dist/MediaOrg/_internal -Recurse -File | ForEach-Object { Set-Content -LiteralPath $_.FullName -Stream Zone.Identifier -Value "[ZoneTransfer]`r`nZoneId=3" }
           $p = Start-Process dist/MediaOrg/MediaOrg.exe -ArgumentList "--selftest" -Wait -PassThru
           Get-Content "$env:TEMP/mediaorg_selftest.txt"
           if ($p.ExitCode -ne 0) { throw "self-test failed ($($p.ExitCode))" }
+          if (-not (Select-String -Path "$env:TEMP/mediaorg_selftest.txt" -Pattern "unblocked=[1-9]" -Quiet)) { throw "files were not unblocked" }
+          Get-ChildItem dist/MediaOrg -Recurse -File | ForEach-Object { Remove-Item -LiteralPath $_.FullName -Stream Zone.Identifier -ErrorAction SilentlyContinue }
+
+      - name: UI test in the real app window
+        timeout-minutes: 5
+        shell: pwsh
+        run: |
+          $p = Start-Process dist/MediaOrg/MediaOrg.exe -ArgumentList "--uitest" -Wait -PassThru
+          Get-Content "$env:TEMP/mediaorg_uitest.txt"
+          if ($p.ExitCode -ne 0) { throw "UI test failed ($($p.ExitCode))" }
 
       - name: Zip
         shell: pwsh

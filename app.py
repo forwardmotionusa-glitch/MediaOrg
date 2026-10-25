@@ -605,8 +605,100 @@ class Api:
         return {"ok": True}
 
 
+# --------------------------------------------------------------------------- startup helpers
+def unblock_bundle():
+    """Windows marks files extracted from a downloaded zip as "from the internet" (the Zone.Identifier
+    stream). .NET then refuses to load the window's DLLs. Clear that mark from MediaOrg's own bundled
+    files only - the same thing as ticking "Unblock" on the zip. Returns how many files were unblocked."""
+    if os.name != "nt" or not mo.FROZEN:
+        return 0
+    n = 0
+    base = Path(sys.executable).resolve().parent
+    for dirpath, _, files in os.walk(base):
+        for f in files:
+            if f.lower().endswith((".dll", ".exe", ".pyd", ".config")):
+                try:
+                    os.remove(os.path.join(dirpath, f) + ":Zone.Identifier")
+                    n += 1
+                except OSError:
+                    pass
+    return n
+
+
+def fatal_dialog(title, text):
+    """The packaged app has no console, so show startup problems in a normal Windows message box."""
+    log = mo.APP_DIR / "startup_error.txt"
+    try:
+        mo.APP_DIR.mkdir(parents=True, exist_ok=True)
+        log.write_text(text, encoding="utf-8")
+    except OSError:
+        pass
+    if os.name == "nt":
+        import ctypes
+        ctypes.windll.user32.MessageBoxW(None, f"{text}\n\nDetails saved to:\n{log}", title, 0x10)
+    else:
+        print(title, text, sep="\n")
+
+
+UITEST_JS = r"""
+(async () => {
+  const r = {};
+  r.bridge_global = window.chrome && window.chrome.webview ? "ok" : "ERR window.chrome.webview missing (a page global is shadowing window.chrome?)";
+  const calls = [["state", []], ["review", []], ["plan_view", []], ["edit_queue", ["all"]],
+                 ["get_settings", []], ["report_text", []]];
+  for (const [m, a] of calls) {
+    const t = performance.now();
+    try { const v = await window.pywebview.api[m](...a); r[m] = "ok " + JSON.stringify(v).length + "B " + Math.round(performance.now() - t) + "ms"; }
+    catch (e) { r[m] = "ERR " + (e && e.name) + ": " + (e && e.message); }
+  }
+  r.dashboard = document.getElementById("main").innerText.slice(0, 160);
+  location.hash = "#settings";
+  await new Promise(res => setTimeout(res, 2500));
+  r.settings_page = document.getElementById("main").innerText.slice(0, 120);
+  location.hash = "#review";
+  await new Promise(res => setTimeout(res, 2500));
+  r.review_page = document.getElementById("main").innerText.slice(0, 120);
+  r.errors = window.__errors || [];
+  window.__uitest = r;
+})();
+"""
+
+
+def uitest():
+    """Build check: open the real window, drive the UI through the real JS<->Python bridge, record results."""
+    out = Path(os.environ.get("TEMP", "/tmp")) / "mediaorg_uitest.txt"
+    import webview
+    api = Api()
+    win = webview.create_window("MediaOrg uitest", str(UI_DIR / "index.html"), js_api=api, width=1200, height=800)
+    result = {}
+
+    def drive():
+        try:
+            time.sleep(8)  # let the page load and boot
+            win.evaluate_js(UITEST_JS)
+            for _ in range(60):
+                time.sleep(1)
+                got = win.evaluate_js("JSON.stringify(window.__uitest || null)")
+                if got and got != "null":
+                    result.update(json.loads(got))
+                    break
+            else:
+                result["error"] = "UI test did not finish"
+        except Exception:
+            result["error"] = traceback.format_exc()
+        out.write_text(json.dumps(result, indent=1, default=str), encoding="utf-8")
+        win.destroy()
+
+    webview.start(drive, http_server=True)
+    ok = (not result.get("error") and all(str(result.get(k, "")).startswith("ok") for k in
+          ("bridge_global", "state", "review", "plan_view", "edit_queue", "get_settings", "report_text"))
+          and "Settings" in result.get("settings_page", "") and not result.get("errors"))
+    return 0 if ok else 1
+
+
 # --------------------------------------------------------------------------- main
 def main():
+    unblocked = unblock_bundle()
     if "--selftest" in sys.argv:
         # Used by the build: proves the GUI stack and UI files are bundled. Writes its result to a file
         # because the windowed exe has no console.
@@ -619,7 +711,7 @@ def main():
             api = Api()
             st = api.state()
             msg = (f"selftest ok {mo.VERSION} ffprobe={bool(mo.FFPROBE)} psutil={bool(psutil)} "
-                   f"nvml={bool(pynvml)} cpu={st['hw'].get('cpu_name')}")
+                   f"nvml={bool(pynvml)} unblocked={unblocked} cpu={st['hw'].get('cpu_name')}")
             out.write_text(msg, encoding="utf-8")
             print(msg)
             return 0
@@ -627,11 +719,25 @@ def main():
             out.write_text("selftest FAILED\n" + traceback.format_exc(), encoding="utf-8")
             traceback.print_exc()
             return 1
-    import webview
-    api = Api()
-    api._window = webview.create_window(f"MediaOrg {mo.VERSION}", str(UI_DIR / "index.html"), js_api=api,
-                                       width=1360, height=900, min_size=(900, 640), background_color="#0E1014")
-    webview.start(http_server=True, debug="--debug" in sys.argv)
+    if "--uitest" in sys.argv:
+        return uitest()
+    try:
+        import webview
+        api = Api()
+        api._window = webview.create_window(f"MediaOrg {mo.VERSION}", str(UI_DIR / "index.html"), js_api=api,
+                                           width=1360, height=900, min_size=(900, 640), background_color="#0E1014")
+        webview.start(http_server=True, debug="--debug" in sys.argv)
+    except Exception:
+        tb = traceback.format_exc()
+        hint = "MediaOrg couldn't open its window."
+        if "Python.Runtime" in tb or "0x80131515" in tb:
+            hint += ("\n\nWindows is blocking files from the downloaded zip. Delete this folder, right-click the "
+                     "zip > Properties > tick Unblock > OK, then extract it again.")
+        elif "WebView2" in tb or "EdgeChromium" in tb:
+            hint += ("\n\nThe Microsoft Edge WebView2 Runtime seems to be missing. Install it from "
+                     "https://developer.microsoft.com/microsoft-edge/webview2/ and try again.")
+        fatal_dialog("MediaOrg", f"{hint}\n\n{tb[-1500:]}")
+        return 1
     mo.STOP.set()  # window closed: let a running scan stop at its next safe point
     return 0
 

@@ -32,7 +32,7 @@ from collections import Counter, defaultdict
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
-VERSION = "0.2.0"
+VERSION = "0.2.1"
 FROZEN = getattr(sys, "frozen", False)           # running as the packaged MediaOrg.exe
 if FROZEN:
     APP_DIR = Path(os.environ.get("LOCALAPPDATA", Path.home())) / "MediaOrg"   # writable, survives updates
