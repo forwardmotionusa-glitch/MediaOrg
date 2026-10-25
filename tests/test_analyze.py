@@ -96,6 +96,24 @@ def main():
         again = analyze.run(cfg, db, threading.Event())          # resume: nothing left to do
         assert again["todo"] == 0 and CALLS["vision"] == 2, again
 
+        # the model's JSON isn't always shaped as asked: other key names are accepted, and an empty answer gets a plain-text retry
+        assert analyze._description_from('{"summary": "A dog runs."}') == ("A dog runs.", [])
+        assert analyze._description_from('{"description": "", "tags": "a, b"}') == ("", ["a", "b"])
+        assert analyze._description_from("not json")[0] == ""
+        orig_chat = analyze._chat_images
+        analyze._chat_images = lambda c, p, imgs, as_json: '{"description": ""}' if as_json else "A dog runs on the beach."
+        try:
+            jpg = _jpg(td / "x.jpg")
+            assert analyze.describe(cfg, [jpg], "") == ("A dog runs on the beach.", [])
+            analyze._chat_images = lambda c, p, imgs, as_json: "{}"
+            try:
+                analyze.describe(cfg, [jpg], "")
+                raise AssertionError("an unusable answer must raise")
+            except ValueError as e:
+                assert "no description" in str(e)
+        finally:
+            analyze._chat_images = orig_chat
+
         # a request Ollama refuses outright (HTTP 400) is a problem with that clip, not "Ollama is down"
         con = mo.open_db(db)
         con.execute("INSERT INTO files(rel,name,ext,kind,size,mtime,date_taken,date_source,date_conf,duration) "

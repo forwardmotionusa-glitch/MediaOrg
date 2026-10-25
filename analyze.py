@@ -205,25 +205,54 @@ def _json_from(text):
         return json.loads(m.group(0)) if m else {}
 
 
-def describe(cfg, frames, transcript):
-    prompt = PROMPT + (f"\nWhat people say in it (may be partial): {transcript}" if transcript else "")
-    imgs = [base64.b64encode(open(f, "rb").read()).decode() for f in frames]
+PLAIN_PROMPT = "These frames come from one video clip, in time order. In one or two plain sentences, say what is happening."
+
+
+def _chat_images(cfg, prompt, imgs, as_json):
+    """One vision request. Too many pictures for the context window -> retry with half of them."""
     while True:
+        body = {"model": cfg["vision_model"], "stream": False, "keep_alive": "30m", "options": _options(cfg),
+                "messages": [{"role": "user", "content": prompt, "images": imgs}]}
+        if as_json:
+            body["format"] = "json"
         try:
-            r = _ollama(cfg, "/api/chat", {"model": cfg["vision_model"], "stream": False, "format": "json", "keep_alive": "30m",
-                                           "options": _options(cfg),
-                                           "messages": [{"role": "user", "content": prompt, "images": imgs}]})
-            break
-        except OllamaError as e:                  # too many pictures for the context window: retry with half of them
+            return _ollama(cfg, "/api/chat", body).get("message", {}).get("content", "") or ""
+        except OllamaError as e:
             if e.code == 400 and "context" in e.message.lower() and len(imgs) > 1:
                 imgs = imgs[:len(imgs) // 2]
                 continue
             raise
-    j = _json_from(r.get("message", {}).get("content", ""))
-    desc = str(j.get("description", "")).strip()
-    if not desc:
-        raise ValueError("model returned no description")
-    tags = [str(t).strip().lower() for t in j.get("tags", []) if str(t).strip()][:6]
+
+
+def _description_from(raw):
+    """(description, tags) from the model's JSON, tolerating other key names; ('', []) if there's nothing usable."""
+    try:
+        j = _json_from(raw)
+    except Exception:
+        j = {}
+    if not isinstance(j, dict):
+        j = {}
+    desc = next((j[k].strip() for k in ("description", "caption", "summary", "scene", "text") if isinstance(j.get(k), str)
+                 and j[k].strip()), "")
+    if not desc:                                      # any other text field: take the longest
+        strings = [v.strip() for k, v in j.items() if k != "tags" and isinstance(v, str) and v.strip()]
+        desc = max(strings, key=len) if strings else ""
+    tags = j.get("tags", [])
+    tags = [str(t).strip().lower() for t in (tags if isinstance(tags, list) else str(tags).split(",")) if str(t).strip()][:6]
+    return desc, tags
+
+
+def describe(cfg, frames, transcript):
+    prompt = PROMPT + (f"\nWhat people say in it (may be partial): {transcript}" if transcript else "")
+    imgs = [base64.b64encode(open(f, "rb").read()).decode() for f in frames]
+    raw = _chat_images(cfg, prompt, imgs, True)
+    desc, tags = _description_from(raw)
+    if not desc:                                      # JSON mode sometimes comes back empty: ask for plain text instead
+        raw2 = _chat_images(cfg, PLAIN_PROMPT, imgs, False).strip()
+        if raw2 and not raw2.startswith("{"):
+            desc, tags = raw2, []
+        else:
+            raise ValueError(f"model returned no description (said: {(raw or raw2)[:80]!r})")
     return desc[:400], tags
 
 
@@ -249,20 +278,20 @@ def _targets(con, cfg):
     q = ",".join("?" * len(kinds))
     rows = con.execute(f"""SELECT f.rel, f.name, f.ext, f.kind, f.duration, f.insta_key, f.date_taken
                            FROM files f LEFT JOIN analysis a ON a.rel = f.rel
-                           WHERE f.kind IN ({q}) AND (a.rel IS NULL OR (a.status = 'error' AND a.tries < ?))
+                           WHERE f.kind IN ({q}) AND (a.rel IS NULL OR (a.status IN ('error', 'skipped') AND a.tries < ?))
                            ORDER BY f.date_taken""", (*kinds, MAX_TRIES)).fetchall()
     return [dict(r) for r in rows]
 
 
 def _source_for(con, root, r):
-    """The file to decode. Insta360 .insv can't be decoded directly, so use its LRV proxy; None if there isn't one."""
+    """The file to decode. Insta360: the small LRV proxy if there is one, otherwise the .insv itself."""
     if r["kind"] != "360video":
         return os.path.join(root, r["rel"])
     folder = os.path.dirname(r["rel"])
     for p in con.execute("SELECT rel FROM files WHERE insta_key=? AND ext='lrv'", (r["insta_key"],)):
         if os.path.dirname(p[0]) == folder:
             return os.path.join(root, p[0])
-    return None
+    return os.path.join(root, r["rel"])           # no proxy: try the .insv itself (X3/X4 files are ordinary MP4-style video)
 
 
 def run(cfg, db_path, stop):
@@ -290,8 +319,7 @@ def run(cfg, db_path, stop):
         tries = (prev[0] if prev else 0) + 1
         if not src or not os.path.isfile(src):
             con.execute("INSERT OR REPLACE INTO analysis(rel,status,error,tries,model,ts) VALUES(?,?,?,?,?,?)",
-                        (r["rel"], "skipped", "no playable file (360 clip without an LRV proxy)" if not src
-                         else "file not found", tries, cfg["vision_model"], now))
+                        (r["rel"], "skipped", "file not found", tries, cfg["vision_model"], now))
             counts["skipped"] += 1
         else:
             try:
