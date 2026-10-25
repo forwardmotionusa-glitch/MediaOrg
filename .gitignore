@@ -1,0 +1,13 @@
+# Personal scan data never goes public
+data/
+reports/
+*.db
+*.db-wal
+*.db-shm
+# Build output
+__pycache__/
+build/
+dist/
+*.spec
+tools/
+*.zip
