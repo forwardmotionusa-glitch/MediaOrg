@@ -640,6 +640,61 @@ def fatal_dialog(title, text):
         print(title, text, sep="\n")
 
 
+UITEST_JS = r"""
+(async () => {
+  const r = {};
+  const calls = [["state", []], ["review", []], ["plan_view", []], ["edit_queue", ["all"]],
+                 ["get_settings", []], ["report_text", []]];
+  for (const [m, a] of calls) {
+    const t = performance.now();
+    try { const v = await window.pywebview.api[m](...a); r[m] = "ok " + JSON.stringify(v).length + "B " + Math.round(performance.now() - t) + "ms"; }
+    catch (e) { r[m] = "ERR " + (e && e.name) + ": " + (e && e.message); }
+  }
+  r.dashboard = document.getElementById("main").innerText.slice(0, 160);
+  location.hash = "#settings";
+  await new Promise(res => setTimeout(res, 2500));
+  r.settings_page = document.getElementById("main").innerText.slice(0, 120);
+  location.hash = "#review";
+  await new Promise(res => setTimeout(res, 2500));
+  r.review_page = document.getElementById("main").innerText.slice(0, 120);
+  r.errors = window.__errors || [];
+  window.__uitest = r;
+})();
+"""
+
+
+def uitest():
+    """Build check: open the real window, drive the UI through the real JS<->Python bridge, record results."""
+    out = Path(os.environ.get("TEMP", "/tmp")) / "mediaorg_uitest.txt"
+    import webview
+    api = Api()
+    win = webview.create_window("MediaOrg uitest", str(UI_DIR / "index.html"), js_api=api, width=1200, height=800)
+    result = {}
+
+    def drive():
+        try:
+            time.sleep(8)  # let the page load and boot
+            win.evaluate_js(UITEST_JS)
+            for _ in range(60):
+                time.sleep(1)
+                got = win.evaluate_js("JSON.stringify(window.__uitest || null)")
+                if got and got != "null":
+                    result.update(json.loads(got))
+                    break
+            else:
+                result["error"] = "UI test did not finish"
+        except Exception:
+            result["error"] = traceback.format_exc()
+        out.write_text(json.dumps(result, indent=1, default=str), encoding="utf-8")
+        win.destroy()
+
+    webview.start(drive, http_server=True)
+    ok = (not result.get("error") and all(str(result.get(k, "")).startswith("ok") for k in
+          ("state", "review", "plan_view", "edit_queue", "get_settings", "report_text"))
+          and "Settings" in result.get("settings_page", "") and not result.get("errors"))
+    return 0 if ok else 1
+
+
 # --------------------------------------------------------------------------- main
 def main():
     unblocked = unblock_bundle()
@@ -663,6 +718,8 @@ def main():
             out.write_text("selftest FAILED\n" + traceback.format_exc(), encoding="utf-8")
             traceback.print_exc()
             return 1
+    if "--uitest" in sys.argv:
+        return uitest()
     try:
         import webview
         api = Api()

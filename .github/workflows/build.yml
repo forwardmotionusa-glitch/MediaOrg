@@ -54,6 +54,14 @@ jobs:
           if (-not (Select-String -Path "$env:TEMP/mediaorg_selftest.txt" -Pattern "unblocked=[1-9]" -Quiet)) { throw "files were not unblocked" }
           Get-ChildItem dist/MediaOrg -Recurse -File | ForEach-Object { Remove-Item -LiteralPath $_.FullName -Stream Zone.Identifier -ErrorAction SilentlyContinue }
 
+      - name: UI test in the real app window
+        timeout-minutes: 5
+        shell: pwsh
+        run: |
+          $p = Start-Process dist/MediaOrg/MediaOrg.exe -ArgumentList "--uitest" -Wait -PassThru
+          Get-Content "$env:TEMP/mediaorg_uitest.txt"
+          if ($p.ExitCode -ne 0) { throw "UI test failed ($($p.ExitCode))" }
+
       - name: Zip
         shell: pwsh
         run: |
