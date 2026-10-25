@@ -38,12 +38,34 @@ def _log(*a):
 
 
 # --------------------------------------------------------------------------- Ollama
+class OllamaError(Exception):
+    """Ollama answered but refused the request (HTTP 4xx/5xx). Not an outage: it's about this one request."""
+
+    def __init__(self, code, message):
+        super().__init__(f"Ollama said {code}: {message}")
+        self.code = code
+        self.message = str(message)
+
+
 def _ollama(cfg, path, body=None, timeout=600):
     url = cfg["ollama_url"].rstrip("/") + path
     req = urllib.request.Request(url, data=None if body is None else json.dumps(body).encode(),
                                  headers={"Content-Type": "application/json"})
-    with urllib.request.urlopen(req, timeout=timeout) as r:
-        return json.loads(r.read() or b"{}")
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            return json.loads(r.read() or b"{}")
+    except urllib.error.HTTPError as e:           # (an HTTPError is also a URLError, so it must be told apart from "Ollama is down")
+        try:
+            msg = json.loads(e.read()).get("error") or e.reason
+        except Exception:
+            msg = e.reason
+        raise OllamaError(e.code, msg) from None
+
+
+def _options(cfg):
+    # One fixed context size for every call: images + prompt need well over Ollama's 4096 default, and changing it
+    # between calls makes Ollama reload the model.
+    return {"temperature": 0.2, "num_ctx": int(cfg.get("vision_ctx", 16384))}
 
 
 def _model_present(cfg, tags):
@@ -186,9 +208,17 @@ def _json_from(text):
 def describe(cfg, frames, transcript):
     prompt = PROMPT + (f"\nWhat people say in it (may be partial): {transcript}" if transcript else "")
     imgs = [base64.b64encode(open(f, "rb").read()).decode() for f in frames]
-    r = _ollama(cfg, "/api/chat", {"model": cfg["vision_model"], "stream": False, "format": "json", "keep_alive": "30m",
-                                   "options": {"temperature": 0.2},
-                                   "messages": [{"role": "user", "content": prompt, "images": imgs}]})
+    while True:
+        try:
+            r = _ollama(cfg, "/api/chat", {"model": cfg["vision_model"], "stream": False, "format": "json", "keep_alive": "30m",
+                                           "options": _options(cfg),
+                                           "messages": [{"role": "user", "content": prompt, "images": imgs}]})
+            break
+        except OllamaError as e:                  # too many pictures for the context window: retry with half of them
+            if e.code == 400 and "context" in e.message.lower() and len(imgs) > 1:
+                imgs = imgs[:len(imgs) // 2]
+                continue
+            raise
     j = _json_from(r.get("message", {}).get("content", ""))
     desc = str(j.get("description", "")).strip()
     if not desc:
@@ -203,7 +233,7 @@ def name_event(cfg, day, descs):
               'and how confident you are that one name fits all the clips, from 0 to 1. If the clips are unrelated '
               'or unclear, use a low confidence. Reply only as JSON: {"title": "...", "summary": "...", "confidence": 0.0}')
     r = _ollama(cfg, "/api/chat", {"model": cfg["vision_model"], "stream": False, "format": "json", "keep_alive": "30m",
-                                   "options": {"temperature": 0.2}, "messages": [{"role": "user", "content": prompt}]})
+                                   "options": _options(cfg), "messages": [{"role": "user", "content": prompt}]})
     j = _json_from(r.get("message", {}).get("content", ""))
     title = re.sub(r"[^\w &'-]", "", str(j.get("title", ""))).strip()[:40]
     try:
