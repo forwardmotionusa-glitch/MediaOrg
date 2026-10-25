@@ -108,17 +108,25 @@ def start_ollama(cfg):
     exe = ollama_exe()
     if not exe:
         return False
-    subprocess.Popen([exe, "serve"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, env=clean_env(),
-                     cwd=os.path.dirname(exe), creationflags=mo.NO_WINDOW | 0x00000008)   # DETACHED_PROCESS: survives closing MediaOrg
+    # Have Explorer start it (as if you'd clicked it in the Start menu). A process we start ourselves inherits things
+    # from MediaOrg that make Ollama's model runner load MediaOrg's DLLs and lock its folder, even with a clean PATH.
+    app = os.path.join(os.path.dirname(exe), "ollama app.exe")
+    subprocess.Popen(["explorer.exe", app if os.path.isfile(app) else exe], creationflags=mo.NO_WINDOW)
     return True
+
+
+def stop_ollama():
+    for image in ("ollama app.exe", "ollama.exe", "llama-server.exe"):
+        subprocess.run(["taskkill", "/F", "/IM", image], capture_output=True, creationflags=mo.NO_WINDOW)
+    time.sleep(2)
 
 
 def wait_for_ollama(cfg, seconds=90):
     for i in range(seconds):
         if ollama_up(cfg):
             return True
-        if i == 15 and not ollama_up(cfg):
-            start_ollama(cfg)               # the installer normally starts it; if not, start it ourselves
+        if i == 30 and not ollama_up(cfg):
+            start_ollama(cfg)               # still not answering: try starting it again
         time.sleep(1)
     return False
 
@@ -139,6 +147,8 @@ def install_ollama(cfg):
     except OSError:
         pass
     _set(pct=98, message="Starting Ollama…")
+    stop_ollama()                    # the installer started it as our child; restart it the clean way
+    start_ollama(cfg)
     if not wait_for_ollama(cfg):
         raise RuntimeError("Ollama installed but didn't start. Open it from the Start menu, then check setup again.")
 
