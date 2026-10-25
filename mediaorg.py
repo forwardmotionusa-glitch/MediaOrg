@@ -32,7 +32,7 @@ from collections import Counter, defaultdict
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
-VERSION = "0.2.1"
+VERSION = "0.3.0"
 FROZEN = getattr(sys, "frozen", False)           # running as the packaged MediaOrg.exe
 if FROZEN:
     APP_DIR = Path(os.environ.get("LOCALAPPDATA", Path.home())) / "MediaOrg"   # writable, survives updates
@@ -83,8 +83,9 @@ VIDEO_EXT = {"mp4", "mov", "m4v", "avi", "mkv", "mts", "m2ts", "wmv", "3gp", "we
 PHOTO_EXT = {"jpg", "jpeg", "png", "heic", "heif", "webp", "gif", "bmp", "tif", "tiff"}
 RAW_EXT = {"dng", "cr2", "cr3", "nef", "arw", "raf", "orf", "rw2"}
 AUDIO_EXT = {"wav", "mp3", "m4a", "aac", "flac"}
-SIDECAR_EXT = {"lrv", "thm", "xmp", "srt", "aae"}
-PROJECT_EXT = {"prproj", "drp", "drt", "aep", "veg", "kdenlive", "mlt", "wfp", "tscproj", "camproj", "fcpxml", "insprj"}
+SIDECAR_EXT = {"lrv", "lrf", "thm", "xmp", "srt", "aae"}      # lrv: GoPro proxy, lrf: DJI proxy - both stay with their video
+PROJECT_EXT = {"prproj", "drp", "drt", "aep", "veg", "kdenlive", "mlt", "wfp", "tscproj", "camproj", "fcpxml", "insprj",
+               "song", "als", "flp", "cpr", "ptx", "rpp"}      # video editors, plus DAWs (Studio One, Ableton, FL, Cubase, Pro Tools, Reaper)
 JUNK_NAMES = {".ds_store", "thumbs.db", "desktop.ini"}
 SKIP_DIRS = {"$recycle.bin", "system volume information", ".trashes", ".spotlight-v100", ".fseventsd", ".temporaryitems", "_mediaorg_logs"}
 
@@ -100,6 +101,17 @@ DEFAULT_CONFIG = {
     "session_gap_hours": 3,
     "wide_span_days": 60,
     "workers": 4,                         # HDD-friendly; raise for NVMe
+    # phase 2: local analysis (Ollama vision model + optional Whisper), see analyze.py
+    "use_ai_titles": True,                # name loose-file day folders "2024-08-28 Beach day" when confident
+    "ai_title_min_confidence": 0.6,       # lower-confidence names are flagged for review instead of applied
+    "vision_model": "qwen2.5vl:7b",
+    "ollama_url": "http://127.0.0.1:11434",
+    "frames_per_clip": 4,
+    "transcribe": True,                   # Whisper transcripts, when faster-whisper or whisper-cli is installed
+    "whisper_model": "small",
+    "analyze_photos": False,
+    "analysis_workers": 3,                # clips prepared (frames + transcript) in parallel while the GPU describes
+    "auto_setup": True,                   # on start, download Ollama and the vision model if they're missing
     "generic_folder_names": [
         "dcim", "camera", "camera roll", "camera uploads", "photos", "pictures", "videos", "video",
         "movies", "images", "img", "media", "footage", "raw", "download", "downloads", "new folder",
@@ -146,6 +158,9 @@ CREATE TABLE IF NOT EXISTS plan_ops(plan_id INTEGER, seq INTEGER, op TEXT, src T
 CREATE TABLE IF NOT EXISTS review(plan_id INTEGER, rel TEXT, reason TEXT, detail TEXT);
 CREATE TABLE IF NOT EXISTS decisions(rel TEXT PRIMARY KEY, action TEXT, value TEXT, ts TEXT);
 CREATE TABLE IF NOT EXISTS moves(batch INTEGER, seq INTEGER, op TEXT, src TEXT, dst TEXT, ts TEXT, undone INTEGER DEFAULT 0);
+CREATE TABLE IF NOT EXISTS analysis(rel TEXT PRIMARY KEY, status TEXT, description TEXT, tags TEXT, transcript TEXT,
+  error TEXT, tries INTEGER DEFAULT 0, model TEXT, ts TEXT);
+CREATE TABLE IF NOT EXISTS events(day TEXT PRIMARY KEY, title TEXT, summary TEXT, confidence REAL, clips INTEGER, ts TEXT);
 CREATE INDEX IF NOT EXISTS ix_files_fp ON files(fp);
 """
 
@@ -459,6 +474,13 @@ def cmd_index(args, cfg):
     if EXIFTOOL_BIN:
         EXIFTOOL = ExifTool(EXIFTOOL_BIN)
 
+    # Unchanged files aren't re-read, so a better file-type rule (e.g. .lrf now a sidecar) is applied to them here.
+    changed = [(kind_of(r["name"], r["ext"]), r["rel"]) for r in con.execute("SELECT rel,name,ext,kind FROM files").fetchall()
+               if kind_of(r["name"], r["ext"]) != r["kind"]]
+    if changed:
+        con.executemany("UPDATE files SET kind=? WHERE rel=?", changed)
+        con.commit()
+        print(f"  re-classified {len(changed):,} already-indexed files with the current file-type rules")
     known = {r["rel"]: (r["size"], r["mtime"]) for r in con.execute("SELECT rel,size,mtime FROM files")}
     seen = set()
     todo = []
@@ -593,6 +615,20 @@ def cmd_plan(args, cfg):
     def add_review(rel, reason, detail=""):
         review.append((plan_id, rel, reason, detail))
 
+    titles = {}                       # day -> confident AI event name from analyze.py
+    if cfg.get("use_ai_titles", True):
+        for r in con.execute("SELECT day, title, confidence FROM events"):
+            if r["title"] and (r["confidence"] or 0) >= cfg.get("ai_title_min_confidence", 0.6):
+                titles[r["day"]] = r["title"]
+
+    def day_dir(d):
+        """'2024-08-28', or '2024-08-28 Beach day' - unless the plain-date folder already exists (keep the day together)."""
+        plain = f"{d:%Y-%m-%d}"
+        t = titles.get(plain)
+        if not t or os.path.exists(os.path.join(root, org_name, f"{d:%Y}", plain)):
+            return plain
+        return f"{plain} {safe_name(t)}"
+
     def dt_of(r):
         return dt.datetime.fromisoformat(r["date_taken"]) if r["date_taken"] else None
 
@@ -681,10 +717,10 @@ def cmd_plan(args, cfg):
             continue
         d = min(dt_of(f) for f in pick)
         if is360:
-            base = (os.path.join(org_name, f"{d:%Y}", f"{d:%Y-%m-%d}", "360") if insta_mode == "together"
-                    else os.path.join(org_name, "360", f"{d:%Y}", f"{d:%Y-%m-%d}"))
+            base = (os.path.join(org_name, f"{d:%Y}", day_dir(d), "360") if insta_mode == "together"
+                    else os.path.join(org_name, "360", f"{d:%Y}", day_dir(d)))
         else:
-            base = os.path.join(org_name, f"{d:%Y}", f"{d:%Y-%m-%d}")
+            base = os.path.join(org_name, f"{d:%Y}", day_dir(d))
         moves = [(f["rel"], os.path.join(base, f["name"])) for f in files]
         clash = [dst for _, dst in moves if dst.lower() in planned_dst or os.path.exists(os.path.join(root, dst))]
         if clash and dec.get(lead[0]["rel"], ("",))[0] == "rename":
@@ -930,7 +966,14 @@ def cmd_report(args, cfg):
 
     reasons = Counter(r["reason"] for r in review)
     unknown_ext = Counter(r["ext"] or "(none)" for r in rows if r["kind"] == "other")
-    mtime_only = [r for r in rows if r["date_source"] == "file_modified"]
+    mtime_only = [r for r in rows if r["date_source"] == "file_modified" and r["kind"] in MEDIA_KINDS]
+    audio_mtime = sum(1 for r in rows if r["date_source"] == "file_modified" and r["kind"] == "audio")   # never moved; not a problem
+    an = dict(con.execute("SELECT status, COUNT(*) FROM analysis GROUP BY status").fetchall())
+    ev_ok = con.execute("SELECT COUNT(*) FROM events WHERE title != '' AND confidence >= ?",
+                        (cfg.get("ai_title_min_confidence", 0.6),)).fetchone()[0]
+    ev_total = con.execute("SELECT COUNT(*) FROM events").fetchone()[0]
+    ai_errors = Counter(re.sub(r"\d+", "#", r["error"] or "")[:90] for r in
+                        con.execute("SELECT error FROM analysis WHERE status='error'"))
     shape = lambda n: re.sub(r"\d", "#", n.rsplit(".", 1)[0])[:30]
     mtime_patterns = Counter(shape(r["name"]) for r in mtime_only)
     anchors = Counter()
@@ -980,6 +1023,16 @@ def cmd_report(args, cfg):
     else:
         L.append("Nothing.")
 
+    L.append("\n## AI analysis (phase 2)")
+    if an:
+        L.append(f"{an.get('ok', 0):,} clips described, {an.get('error', 0):,} failed, {an.get('skipped', 0):,} skipped "
+                 f"(of {sum(1 for r in rows if r['kind'] in ('video', '360video')):,} videos). "
+                 f"{ev_ok:,} of {ev_total:,} days got a confident name; the rest keep just the date (see Action items > AI review).")
+        for e, n in ai_errors.most_common(3):
+            L.append(f"- {n:,} x {e}")
+    else:
+        L.append("Not run yet. Use the Overnight run on the dashboard.")
+
     L.append("\n## Edit queue - shoot sessions")
     L.append(f"{len(vids):,} videos in {len(sessions):,} sessions (new session after a {cfg['session_gap_hours']}h gap). "
              f"Full list: edit_queue.csv\n")
@@ -1003,6 +1056,11 @@ def cmd_report(args, cfg):
                  f"(# = digit), may need a filename date pattern or metadata reader:")
         for p, n in mtime_patterns.most_common(12):
             L.append(f"    {n:>6,}  {p}  e.g. {next(r['name'] for r in mtime_only if shape(r['name']) == p)}")
+    if audio_mtime:
+        L.append(f"- ({audio_mtime:,} audio files also only have modified dates; audio is never moved, so that is fine)")
+    if an:
+        L.append(f"- analysis: {an.get('ok', 0):,} described, {an.get('error', 0):,} failed {dict(ai_errors.most_common(3))}, "
+                 f"{an.get('skipped', 0):,} skipped; {ev_ok:,}/{ev_total:,} days named confidently")
     if unknown_ext:
         L.append(f"- unrecognized extensions (count): {dict(unknown_ext.most_common(15))}")
     if suspicious_anchors:

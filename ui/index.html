@@ -107,6 +107,20 @@ pre.report{margin:0;white-space:pre-wrap;font-family:var(--mono);font-size:12.5p
 .toast.err{border-color:#7A3B3B;background:#2A1717}
 .modal{position:fixed;inset:0;background:#000a;display:flex;align-items:center;justify-content:center;z-index:8;padding:16px}
 .modal .box{background:var(--panel);border:1px solid var(--line2);border-radius:14px;padding:22px;max-width:480px;width:100%;display:flex;flex-direction:column;gap:14px}
+/* overnight run: night sky by default, sunrise for the morning summary */
+.night,.morning{position:relative;overflow:hidden;border-radius:14px;padding:20px;display:flex;flex-wrap:wrap;gap:16px;align-items:center;justify-content:space-between}
+.night{border:1px solid #3B3A7A;background:
+  radial-gradient(1.5px 1.5px at 12% 28%,#fffc 50%,#0000 51%),radial-gradient(1px 1px at 33% 72%,#fff9 50%,#0000 51%),
+  radial-gradient(1.5px 1.5px at 58% 20%,#fffc 50%,#0000 51%),radial-gradient(1px 1px at 79% 64%,#fff9 50%,#0000 51%),
+  radial-gradient(1px 1px at 91% 16%,#fffc 50%,#0000 51%),radial-gradient(1px 1px at 46% 48%,#fff8 50%,#0000 51%),
+  linear-gradient(135deg,#151839 0%,#231A4D 55%,#2E1F5E 100%)}
+.morning{border:1px solid var(--amber-line);background:linear-gradient(135deg,#2A1E10 0%,#3A2812 60%,#4A3014 100%)}
+.morning[hidden]{display:none}
+.night svg,.morning svg{flex:none}
+.btn.night{background:linear-gradient(135deg,#6C5CE7,#9B7BFF);border-color:#B9A3FF;color:#fff;height:52px;font-size:15px;padding:0 24px;box-shadow:0 0 24px #6C5CE766}
+.btn.night:hover{background:linear-gradient(135deg,#7A6BF0,#A98DFF);color:#fff}
+.night .sub{color:#C9C3F0} .night h2,.morning h2{font-size:18px}
+.night .bad{color:var(--amber)} .night .good{color:#9FE0B8}
 @media (max-width:860px){
   .app{flex-direction:column} nav.side{position:static;height:auto;flex:none;flex-direction:row;flex-wrap:wrap;width:100%}
   .brand{padding:0 8px} .drivecard,.jobpill{display:none} .steps{grid-template-columns:repeat(2,minmax(0,1fr))}
@@ -238,6 +252,8 @@ function renderDash() {
   $("#main").innerHTML = `
     <header class="top"><div style="display:flex;flex-direction:column;gap:4px"><h1 id="dtitle"></h1><div class="sub" id="dsub"></div></div><div class="row" id="dbtns"></div></header>
     <ol class="steps" aria-label="Pipeline" id="steps"></ol>
+    <section class="night" aria-label="Overnight run" id="night"></section>
+    <section class="morning" aria-label="Morning summary" id="morning" hidden></section>
     <section class="panel" aria-label="Progress" id="prog"></section>
     <section class="hwgrid" aria-label="Hardware" id="hw"></section>
     <div class="row" style="align-items:stretch;gap:20px">
@@ -245,10 +261,65 @@ function renderDash() {
       <section class="panel" style="flex:2 1 420px" aria-labelledby="lh"><h2 id="lh">Activity</h2><div class="log" id="log"></div></section>
     </div>`;
   if (S) updateDash();
+  refreshSetup();
+}
+/* ---------- overnight run ---------- */
+let SETUP = null, NIGHT_APPLY = false;
+async function refreshSetup() { const r = await call("analysis_setup"); if (r) { SETUP = r; if (page === "dashboard" && S) updateNight(); } }
+const MOON = `<svg width="44" height="44" viewBox="0 0 24 24" fill="#E9E3FF" stroke="#B9A3FF" stroke-width="1.2" stroke-linejoin="round" aria-hidden="true"><path d="M20 14.5A8.5 8.5 0 0 1 9.5 4a8.5 8.5 0 1 0 10.5 10.5z"/></svg>`;
+const SUN = `<svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="#F5B544" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="14" r="4" fill="#F5B544"/><path d="M12 4v3M4.5 8.5l2 2M19.5 8.5l-2 2M2 14h2M20 14h2M3 20h18"/></svg>`;
+async function startNight() {
+  if (!S.drive) return pickDrive();
+  const body = NIGHT_APPLY
+    ? "MediaOrg will scan, describe your clips on the GPU, build the plan and then APPLY it, with no questions asked. Anything it is unsure about is left in place for you. Every move is logged and can be undone from Plan & apply."
+    : "MediaOrg will scan, describe your clips on the GPU and build the plan, with no questions asked. Nothing is moved: in the morning you review the plan and press Apply. Keep the PC plugged in.";
+  if (!await confirmBox(S.overnight && S.overnight.pending ? "Resume the overnight run?" : "Start the overnight run?", body, "Start")) return;
+  const r = await call("overnight_start", NIGHT_APPLY); if (r && r.ok) toast("Overnight run started. Sleep well.");
+}
+async function installComponents() { const r = await call("install_components"); if (r && r.ok) toast("Setting up Ollama and the vision model…"); }
+async function analyzeNow() { const r = await call("start_analysis"); if (r && r.ok) toast("Analyzing…"); }
+function updateNight() {
+  const running = S.job.running, an = S.analysis || {}, on = S.overnight || {};
+  const bad = SETUP ? SETUP.items.filter(i => !i.ok && i.required) : [], opt = SETUP ? SETUP.items.filter(i => !i.ok && !i.required) : [];
+  const ready = SETUP && SETUP.ready;
+  const su = S.setup || {};
+  if (updateNight.wasSetup && !su.running) refreshSetup();       // setup just finished: re-check what's installed
+  updateNight.wasSetup = su.running;
+  const status = su.running ? `<div class="small"><b>Setting up (one time, runs by itself)</b></div><div class="small">${esc(su.message)}</div><div class="bar" style="max-width:420px"><div style="width:${su.pct}%;background:#9B7BFF"></div></div>`
+    : su.error ? `<div class="small bad">Setup problem: ${esc(su.error)}</div><div><button class="btn sm" onclick="installComponents()">Try again</button></div>`
+    : su.warning ? `<div class="small bad">${esc(su.warning)}</div><div><button class="btn sm" onclick="installComponents()">Try again</button></div>`
+    : !SETUP ? `<div class="small">Checking this PC…</div>`
+    : ready ? `<div class="small good">✓ Ready: ffmpeg, Ollama and ${esc((SETUP.items.find(i => i.key === "model") || {}).label || "the model")}${opt.length ? ` · optional: ${esc(opt.map(i => i.label).join(", "))} not set up` : ""}</div>`
+    : `<div class="small bad">Still needed:</div>${bad.map(i => `<div class="small"><b>${esc(i.label)}</b>: ${esc(i.detail)}</div>`).join("")}<div><button class="btn sm" onclick="installComponents()">Download &amp; install now</button></div>`;
+  setHTML("night", `<div style="display:flex;gap:16px;align-items:center;flex:2 1 380px">${MOON}<div style="display:flex;flex-direction:column;gap:6px">
+      <h2>Overnight run</h2>
+      <div class="sub">${on.pending && !running ? "The last overnight run was interrupted. Resume to pick up where it stopped." : "Scan, describe every clip on the GPU, name each day's event and build the plan. It never stops to ask: anything unsure waits for you in Action items."}</div>
+      ${status}
+      ${an.clips ? `<div class="small sub">${fmt(an.ok || 0)} of ${plural(an.clips, "clip")} described so far</div>` : ""}</div></div>
+    <div style="display:flex;flex-direction:column;gap:10px;align-items:flex-start;flex:1 1 260px">
+      <button class="btn night" onclick="startNight()" ${!S.drive || running || !ready ? "disabled" : ""}>${running && S.job.name === "Overnight" ? "Running tonight…" : on.pending ? "Resume overnight run" : "Start overnight run"}</button>
+      <label class="row small" style="gap:8px;min-height:36px"><input type="checkbox" ${NIGHT_APPLY ? "checked" : ""} onchange="NIGHT_APPLY=this.checked" style="width:18px;height:18px;accent-color:#9B7BFF"> Also apply the plan when finished (undoable)</label>
+      <div class="row" style="gap:8px"><button class="btn sm ghost" onclick="refreshSetup()">Check setup</button><button class="btn sm ghost" onclick="analyzeNow()" ${running || !ready ? "disabled" : ""}>Analyze only</button></div>
+    </div>`);
+  const last = on.last, m = $("#morning");
+  if (m) {
+    m.hidden = !(last && !running);
+    if (!m.hidden) {
+      const c = last.counts || {}, fin = new Date(last.finished).toLocaleString();
+      const probs = last.steps.filter(s => !s.ok);
+      setHTML("morning", `<div style="display:flex;gap:16px;align-items:center;flex:2 1 380px">${SUN}<div style="display:flex;flex-direction:column;gap:6px">
+          <h2>Good morning. The overnight run ${last.status === "complete" ? "finished" : esc(last.status)} · ${esc(fin)}</h2>
+          <div class="small" style="color:var(--text2)">${fmt(c.described)} clips described · ${fmt(c.days_named)} days named · ${plural(c.plan_moves || 0, "move")} planned${last.apply ? (c.applied ? " and applied" : "") : ", not applied yet"} · ${plural(c.review_items || 0, "item")} set aside</div>
+          ${c.names_to_check || c.clip_problems ? `<div class="small" style="color:var(--amber)">${fmt((c.names_to_check || 0) + (c.clip_problems || 0))} things to check in AI review</div>` : ""}
+          ${probs.map(s => `<div class="small" style="color:var(--amber)">${esc(s.name)}: ${esc(s.note)}</div>`).join("")}</div></div>
+        <div class="row"><a class="btn" href="#review/ai">AI review</a><a class="btn primary" href="#plan">${last.apply && c.applied ? "See what moved" : "Review &amp; apply"}</a></div>`);
+    }
+  }
 }
 function updateDash() {
   const p = S.progress, j = S.job, running = j.running;
-  const phaseName = {walking: "Listing files on the drive", indexing: "Reading dates and fingerprints", applying: "Moving files (same-drive renames)"}[p.phase];
+  updateNight();
+  const phaseName = {walking: "Listing files on the drive", indexing: "Reading dates and fingerprints", analyzing: "Describing clips on the GPU", applying: "Moving files (same-drive renames)"}[p.phase];
   setHTML("dtitle", esc(running ? `${j.name === "Scan" ? "Scanning" : j.name === "Apply" ? "Applying plan on" : j.name + " ·"} ${S.drive}` : S.drive ? "Ready" : "Welcome"));
   setHTML("dsub", running ? "Nothing is moved until you apply the plan" : S.files ? `${fmt(S.files)} files indexed${S.last_index ? " · last scan " + new Date(S.last_index).toLocaleString() : ""}` : "Choose your media drive, then run a scan. A scan never moves anything.");
   setHTML("dbtns", running
@@ -258,7 +329,7 @@ function updateDash() {
   const rv = S.review || {}, pl = S.plan;
   const st = [
     ["1", "Index", ["walking", "indexing"].includes(p.phase) && running ? ["active", p.total ? `${p.pct}% · running` : "listing files…"] : S.last_index ? ["done", "Done · " + new Date(S.last_index).toLocaleDateString()] : ["", "Not run yet"]],
-    ["2", "Analyze (GPU)", ["", "Coming in phase 2"]],
+    ["2", "Analyze (GPU)", p.phase === "analyzing" && running ? ["active", `${p.pct}% · describing`] : (S.analysis || {}).ok ? ["done", `${fmt(S.analysis.ok)} of ${fmt(S.analysis.clips)} clips`] : ["", "Overnight or Analyze only"]],
     ["3", "Plan", pl ? (S.decisions.since_plan ? ["warn", `${plural(S.decisions.since_plan, "new decision")} · rebuild`] : ["done", `Plan #${pl.id} · ${fmt(pl.dirs + pl.files)} moves`]) : ["", "After the scan"]],
     ["4", "Review", rv.open_total ? ["warn", `${fmt(rv.open_total)} need you`] : pl ? ["done", "All clear"] : ["", "After the plan"]],
     ["5", "Apply", p.phase === "applying" && running ? ["active", `${p.pct}% · moving`] : pl && pl.undone ? ["", "Undone · rebuild to apply"] : pl && pl.applied ? ["done", "Applied · undo any time"] : pl ? ["", "When you are ready"] : ["", "—"]],
@@ -293,8 +364,8 @@ function updateDash() {
       <div class="row between small muted"><span>VRAM</span><span>${g.mem_total ? GB(g.mem_used) + " / " + GB(g.mem_total) + " GB" : "—"}</span></div>
       <div class="bar"><div style="width:${g.mem_total ? 100 * g.mem_used / g.mem_total : 0}%;background:var(--purple)"></div></div>
       <div class="mini"><div class="muted">Temp<b style="color:var(--text)">${g.temp ?? "—"}°C</b></div><div class="muted">Power<b style="color:var(--text)">${g.power ?? "—"} W</b></div><div class="muted">Decoder<b style="color:var(--text)">${g.dec ?? "—"}%</b></div></div>
-      <div class="small muted">Phase 1 runs on CPU + disk; the GPU does the work in phase 2.</div>`
-      : `<div class="hwnum muted">—</div><div class="sub">No NVIDIA GPU detected. Scanning and organizing work fine without one; phase 2 analysis will need it.</div>`}</div>
+      <div class="small muted">Scanning uses CPU + disk; analysis uses the GPU to decode video and run the vision model.</div>`
+      : `<div class="hwnum muted">—</div><div class="sub">No NVIDIA GPU detected. Scanning and organizing work fine without one; analysis would be slow on the CPU.</div>`}</div>
     <div class="panel"><div class="row between"><b>Disk</b><span class="small muted">the usual bottleneck</span></div>
       <div class="hwnum">${h.read_mbs ?? 0} <span class="muted" style="font-size:15px;font-weight:500">MB/s</span></div>${spark(h.hist.read, "#E6E8EC")}
       <div class="small muted">Read by MediaOrg · USB 3.0 HDDs top out around 150–200</div>
@@ -313,7 +384,7 @@ function updateDash() {
 
 /* ---------- action items ---------- */
 let RV = null;
-const TABS = [["projects", "Editing projects"], ["dates", "No real date"], ["clash", "Name clashes"], ["dups", "Duplicates"], ["insta", "Insta360 sets"], ["other", "Other"]];
+const TABS = [["projects", "Editing projects"], ["dates", "No real date"], ["clash", "Name clashes"], ["dups", "Duplicates"], ["insta", "Insta360 sets"], ["ai", "AI review"], ["other", "Other"]];
 async function renderReview() {
   RV = await api.review();
   const tab = sub || "projects";
@@ -345,6 +416,8 @@ function reviewBody(tab) {
       <button class="btn sm ghost" onclick="openRel(this)" data-rel="${R(it.rel)}">Show</button></div></div>`; }).join("");
   if (tab === "dups") return `<div class="ph">Files with the same fingerprint (size + start + end of file). MediaOrg never deletes anything; check them yourself in Explorer.</div>` +
     list.map(d => `<div class="rv" style="align-items:flex-start"><div class="grow" style="flex:2 1 300px">${d.paths.map(p => `<div class="row" style="gap:8px"><button class="btn sm ghost" onclick="openRel(this,true)" data-rel="${R(p)}" aria-label="Show in Explorer">Show</button><span class="path grow">${R(p)}</span></div>`).join("")}${d.n > d.paths.length ? `<div class="small muted">and ${fmt(d.n - d.paths.length)} more copies</div>` : ""}</div><div class="small muted">${plural(d.n, "copy", "copies")} · ${R(d.size)} each · ${R(d.waste)} extra</div></div>`).join("");
+  if (tab === "ai") return `<div class="ph">Things the overnight analysis wasn't sure about. Nothing here blocks the plan: a day whose name wasn't confident keeps just its date, and clips that failed stay where they are.</div>` +
+    list.map(it => `<div class="rv"><div class="grow"><div class="path">${R(it.title)}</div><div class="small muted">${it.kind === "name" ? "Event name" : it.kind === "skipped" ? "Skipped" : "Failed"} · ${R(it.detail)}</div></div>${it.rel ? `<button class="btn sm ghost" onclick="openRel(this,true)" data-rel="${R(it.rel)}">Show</button>` : ""}</div>`).join("");
   if (tab === "insta") return `<div class="ph">Capture sets with a front-lens file but no back-lens file. Normal for X3/X4 (single file); on older cameras, the other half may be elsewhere.</div>` +
     list.map(s => `<div class="rv"><div class="grow"><div class="path">${R(s.folder)}\\ · ${R(s.key)}</div><div class="small muted mono">${R(s.names.join("  "))}</div></div><button class="btn sm ghost" onclick="openRel(this)" data-rel="${R(s.folder)}">Show</button></div>`).join("");
   return `<div class="ph">Left in place: not media, unreadable, or failed to move. No decision needed.</div>` +
@@ -396,9 +469,9 @@ async function renderQueue() {
   const opts = [["all", "All cameras"], ["360", "Insta360 only"], ["GoPro", "GoPro only"], ["Phone", "Phone only"], ["DJI", "DJI only"], ["Video", "Other video"]];
   $("#main").innerHTML = `<header class="top"><div style="display:flex;flex-direction:column;gap:4px"><h1>Edit queue</h1><div class="sub">${plural(q.total_clips, "video")} in ${plural(q.total_sessions, "shoot session")}, newest first. Click a clip to show it in Explorer.</div></div>
     <label class="row small muted" style="gap:8px">Show <select onchange="location.hash='#queue/'+this.value">${opts.map(([k, l]) => `<option value="${k}" ${k === cam ? "selected" : ""}>${l}</option>`).join("")}</select></label></header>
-    ${q.sessions.length ? q.sessions.map(s => `<section class="panel"><div class="row between" style="align-items:flex-start"><div style="display:flex;flex-direction:column;gap:4px;min-width:0"><div class="small muted">Session ${s.num} · ${esc(s.when)}</div><h2 style="font-size:18px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(s.title)}</h2><div class="small" style="color:var(--text2)">${esc(s.meta)}</div></div>
+    ${q.sessions.length ? q.sessions.map(s => `<section class="panel"><div class="row between" style="align-items:flex-start"><div style="display:flex;flex-direction:column;gap:4px;min-width:0"><div class="small muted">Session ${s.num} · ${esc(s.when)}</div><h2 style="font-size:18px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(s.title)} ${s.ai_title ? '<span class="pill" style="vertical-align:middle">AI name</span>' : ""}</h2><div class="small" style="color:var(--text2)">${esc(s.meta)}</div></div>
       <div class="row"><button class="btn sm" onclick="openRel(this)" data-rel="${esc(s.folder)}">Open folder</button><button class="btn sm ghost" onclick="copySession(${s.num})">Copy file list</button></div></div>
-      <div class="clipgrid">${s.clips.map(c => `<button class="clip" onclick="openRel(this,true)" data-rel="${esc(c.rel)}" title="${esc(c.rel)}"><div class="thumb">${ICON_CLIP}<span class="d">${esc(c.dur)}</span><span class="c" style="color:${CAM_COLOR[c.cam] || "var(--text)"}">${esc(c.cam)}</span></div><div class="mono small" style="color:var(--text2);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(c.time)}  ${esc(c.name)}</div></button>`).join("")}</div>
+      <div class="clipgrid">${s.clips.map(c => `<button class="clip" onclick="openRel(this,true)" data-rel="${esc(c.rel)}" title="${esc(c.rel + (c.desc ? "\n" + c.desc : ""))}"><div class="thumb">${ICON_CLIP}<span class="d">${esc(c.dur)}</span><span class="c" style="color:${CAM_COLOR[c.cam] || "var(--text)"}">${esc(c.cam)}</span></div><div class="mono small" style="color:var(--text2);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(c.time)}  ${esc(c.name)}</div>${c.desc ? `<div class="small muted" style="display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden">${esc(c.desc)}</div>` : ""}</button>`).join("")}</div>
       ${s.more ? `<div class="small muted">+ ${fmt(s.more)} more clips in this session</div>` : ""}</section>`).join("")
       : `<div class="panel empty">No videos with dates yet. Run a scan first.</div>`}`;
 }
@@ -429,6 +502,13 @@ async function renderSettings() {
         <label class="f">Parallel readers (HDD: 2–4)<input type="number" name="workers" min="1" max="32" value="${esc(cfg.workers)}"></label>
       </div>
       <label class="row" style="gap:10px;min-height:44px"><input type="checkbox" name="move_low_confidence_dates" ${cfg.move_low_confidence_dates ? "checked" : ""} style="width:18px;height:18px;accent-color:var(--blue)"> Also move files that only have a "modified" date (instead of asking)</label>
+      <div class="row" style="gap:20px;align-items:flex-start">
+        <label class="f">Vision model (Ollama)<input type="text" name="vision_model" value="${esc(cfg.vision_model)}"></label>
+        <label class="f">Frames per clip<input type="number" name="frames_per_clip" min="1" max="12" value="${esc(cfg.frames_per_clip)}"></label>
+      </div>
+      <label class="row" style="gap:10px;min-height:44px"><input type="checkbox" name="use_ai_titles" ${cfg.use_ai_titles ? "checked" : ""} style="width:18px;height:18px;accent-color:var(--blue)"> Name day folders from what the analysis sees (e.g. "2024-08-28 Beach day"); unsure names keep just the date</label>
+      <label class="row" style="gap:10px;min-height:44px"><input type="checkbox" name="auto_setup" ${cfg.auto_setup ? "checked" : ""} style="width:18px;height:18px;accent-color:var(--blue)"> Download Ollama and the vision model automatically when MediaOrg starts, if they're missing (about 8 GB, once)</label>
+      <label class="row" style="gap:10px;min-height:44px"><input type="checkbox" name="transcribe" ${cfg.transcribe ? "checked" : ""} style="width:18px;height:18px;accent-color:var(--blue)"> Use speech transcripts when Whisper is installed</label>
       <label class="f">Generic folder names, one per line. Files in these are sorted by date; any other folder name is treated as a named project and kept whole.
         <textarea name="generic_folder_names" rows="12">${esc((cfg.generic_folder_names || []).join("\n"))}</textarea></label>
       <div class="row"><button class="btn primary" type="submit">Save settings</button><span class="small muted">Then use Rebuild plan on the Plan screen.</span></div>
@@ -438,6 +518,7 @@ async function saveSettings(e) {
   e.preventDefault();
   const f = new FormData(e.target), o = Object.fromEntries(f.entries());
   o.move_low_confidence_dates = f.get("move_low_confidence_dates") === "on";
+  o.use_ai_titles = f.get("use_ai_titles") === "on"; o.transcribe = f.get("transcribe") === "on"; o.auto_setup = f.get("auto_setup") === "on";
   const r = await call("save_settings", o); if (r && r.ok) toast("Settings saved");
 }
 

@@ -11,3 +11,5 @@ dist/
 *.spec
 tools/
 *.zip
+components/
+downloads/

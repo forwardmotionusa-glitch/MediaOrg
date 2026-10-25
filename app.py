@@ -24,6 +24,8 @@ import time
 import traceback
 from pathlib import Path
 
+import analyze
+import components
 import mediaorg as mo
 
 try:
@@ -201,6 +203,18 @@ def camera_of(r):
     return "Video"
 
 
+def keep_awake(on):
+    """Ask Windows not to sleep while a long job runs (the flag belongs to the calling thread, so call it from the worker)."""
+    if os.name != "nt":
+        return
+    try:
+        import ctypes
+        ES_CONTINUOUS, ES_SYSTEM_REQUIRED = 0x80000000, 0x00000001
+        ctypes.windll.kernel32.SetThreadExecutionState(ES_CONTINUOUS | (ES_SYSTEM_REQUIRED if on else 0))
+    except Exception:
+        pass
+
+
 def fmt_dur(sec):
     sec = int(sec or 0)
     h, m, s = sec // 3600, sec % 3600 // 60, sec % 60
@@ -253,7 +267,7 @@ class Api:
                 traceback.print_exc()
             finally:
                 self._job.update(running=False, finished=time.time())
-                if mo.PROGRESS.get("phase") in ("walking", "indexing", "applying"):
+                if mo.PROGRESS.get("phase") in ("walking", "indexing", "analyzing", "applying"):
                     mo.set_progress(phase="stopped" if mo.STOP.is_set() else "idle")
                 LOG.append({"t": time.strftime("%H:%M:%S"), "m": f"--- {name} finished"})
 
@@ -264,7 +278,7 @@ class Api:
     def state(self):
         drive = self._drive()
         out = {"version": mo.VERSION, "drive": drive, "job": dict(self._job), "hw": self._hw.state(),
-               "progress": dict(mo.PROGRESS), "log": list(LOG)[-60:][::-1], "data_dir": str(mo.APP_DIR)}
+               "progress": dict(mo.PROGRESS), "setup": dict(components.STATE), "log": list(LOG)[-60:][::-1], "data_dir": str(mo.APP_DIR)}
         p = out["progress"]
         p["pct"] = round(100 * p["done"] / p["total"], 1) if p.get("total") else 0
         if drive and os.path.isdir(drive):
@@ -306,6 +320,14 @@ class Api:
                                   FROM files WHERE fp IS NOT NULL AND kind IN ('video','photo','raw','360video','360photo')
                                   GROUP BY fp HAVING COUNT(*)>1)""").fetchone()
             out["dups"] = {"sets": dups[0], "waste": human(dups[1])}
+            an = {r[0]: r[1] for r in con.execute("SELECT status, COUNT(*) FROM analysis GROUP BY status")}
+            an["clips"] = con.execute("SELECT COUNT(*) FROM files WHERE kind IN ('video','360video')").fetchone()[0]
+            out["analysis"] = an
+            out["ai_flags"] = (an.get("error", 0) + an.get("skipped", 0) + con.execute(
+                "SELECT COUNT(*) FROM events WHERE title IS NULL OR title='' OR confidence < ?",
+                (self._cfg["ai_title_min_confidence"],)).fetchone()[0])
+            out["overnight"] = {"last": json.loads(mo.meta_get(con, "overnight_last") or "null"),
+                                "pending": mo.meta_get(con, "overnight_pending") == "1"}
         finally:
             con.close()
         return out
@@ -339,6 +361,101 @@ class Api:
             mo.cmd_plan(self._ns(), self._cfg)
             mo.cmd_report(self._ns(), self._cfg)
         return self._run("Scan", go)
+
+    def analysis_setup(self):
+        return analyze.setup_status(self._cfg)
+
+    def install_components(self):
+        """Download and set up Ollama and the vision model (what's already there is skipped)."""
+        if components.STATE["running"]:
+            return {"ok": False, "error": "Setup is already running."}
+        threading.Thread(target=components.ensure, args=(self._cfg,), daemon=True).start()
+        return {"ok": True}
+
+    def auto_setup(self):
+        """On start: fetch anything missing in the background, unless switched off in Settings."""
+        if self._cfg.get("auto_setup", True):
+            self.install_components()
+
+    def start_analysis(self):
+        def go():
+            analyze.run(self._cfg, self._db_path, mo.STOP)
+            mo.cmd_plan(self._ns(), self._cfg)
+            mo.cmd_report(self._ns(), self._cfg)
+        return self._run("Analyze", go)
+
+    def overnight_start(self, apply=False):
+        """Scan, analyze on the GPU, plan, report - and optionally apply - with no questions asked.
+        Each step that fails is recorded for the morning summary; only a failed scan ends the run early."""
+        drive = self._drive()
+        if not drive:
+            return {"ok": False, "error": "Choose a drive first."}
+        if not os.path.isdir(drive):
+            return {"ok": False, "error": f"Can't find {drive}. Is the drive plugged in?"}
+        cfg = self._cfg
+
+        def go():
+            keep_awake(True)
+            summary = {"started": dt.datetime.now().isoformat(timespec="seconds"), "apply": bool(apply), "steps": []}
+            con = self._con()
+            mo.meta_set(con, "overnight_pending", "1")
+            con.commit()
+            con.close()
+
+            def step(name, fn):
+                if mo.STOP.is_set():
+                    return None
+                LOG.append({"t": time.strftime("%H:%M:%S"), "m": f"--- {name}"})
+                rec = {"name": name, "ok": True, "note": ""}
+                summary["steps"].append(rec)
+                try:
+                    rec["result"] = fn()
+                except SystemExit as e:
+                    rec.update(ok=False, note=str(e.code))
+                except analyze.Unavailable as e:
+                    rec.update(ok=False, note=str(e))
+                except Exception as e:
+                    rec.update(ok=False, note=f"{type(e).__name__}: {e}")
+                    traceback.print_exc()
+                if not rec["ok"]:
+                    LOG.append({"t": time.strftime("%H:%M:%S"), "m": f"{name} problem: {rec['note']}"})
+                return rec
+
+            try:
+                scan = step("Scan", lambda: mo.cmd_index(self._ns(root=drive), cfg))
+                if scan and scan["ok"] and scan.get("result") != "stopped":
+                    step("Analyze", lambda: analyze.run(cfg, self._db_path, mo.STOP))
+                    plan = step("Plan", lambda: mo.cmd_plan(self._ns(), cfg))
+                    step("Report", lambda: mo.cmd_report(self._ns(), cfg))
+                    if apply and plan and plan["ok"]:
+                        step("Apply", lambda: mo.cmd_apply(self._ns(prune_empty=True), cfg))
+                        step("Report", lambda: mo.cmd_report(self._ns(), cfg))
+                summary["status"] = ("stopped" if mo.STOP.is_set() else
+                                     "scan failed" if not (scan and scan["ok"]) else "complete")
+            finally:
+                summary["finished"] = dt.datetime.now().isoformat(timespec="seconds")
+                con = self._con()
+                try:
+                    summary["counts"] = {
+                        "files": con.execute("SELECT COUNT(*) FROM files").fetchone()[0],
+                        "described": con.execute("SELECT COUNT(*) FROM analysis WHERE status='ok'").fetchone()[0],
+                        "clip_problems": con.execute("SELECT COUNT(*) FROM analysis WHERE status IN ('error','skipped')").fetchone()[0],
+                        "days_named": con.execute("SELECT COUNT(*) FROM events WHERE title!='' AND confidence >= ?",
+                                                  (cfg["ai_title_min_confidence"],)).fetchone()[0],
+                        "names_to_check": con.execute("SELECT COUNT(*) FROM events WHERE title='' OR confidence < ?",
+                                                      (cfg["ai_title_min_confidence"],)).fetchone()[0]}
+                    plan = con.execute("SELECT plan_id, applied FROM plans ORDER BY plan_id DESC LIMIT 1").fetchone()
+                    if plan:
+                        summary["counts"]["plan_moves"] = con.execute("SELECT COUNT(*) FROM plan_ops WHERE plan_id=?", (plan[0],)).fetchone()[0]
+                        summary["counts"]["review_items"] = con.execute("SELECT COUNT(*) FROM review WHERE plan_id=?", (plan[0],)).fetchone()[0]
+                        summary["counts"]["applied"] = bool(plan[1])
+                    mo.meta_set(con, "overnight_last", json.dumps(summary, default=str))
+                    mo.meta_set(con, "overnight_pending", "0")
+                    con.commit()
+                finally:
+                    con.close()
+                keep_awake(False)
+        return self._run("Overnight", go)
 
     def make_plan(self):
         def go():
@@ -412,6 +529,7 @@ class Api:
                 if has00 and not has10:
                     lonely.append({"folder": folder, "key": key, "names": names})
             out["insta"] = lonely
+            out["ai"] = analyze.flags(con, self._cfg)
             out["root"] = root
             return out
         finally:
@@ -481,8 +599,11 @@ class Api:
         try:
             root = mo.meta_get(con, "root") or self._drive()
             rows = [dict(r) for r in con.execute(
-                "SELECT rel, name, ext, kind, insta_key, date_taken, duration, width, height, size FROM files "
-                "WHERE kind IN ('video','360video') AND date_taken IS NOT NULL ORDER BY date_taken")]
+                "SELECT f.rel, f.name, f.ext, f.kind, f.insta_key, f.date_taken, f.duration, f.width, f.height, f.size, "
+                "a.description FROM files f LEFT JOIN analysis a ON a.rel = f.rel AND a.status = 'ok' "
+                "WHERE f.kind IN ('video','360video') AND f.date_taken IS NOT NULL ORDER BY f.date_taken")]
+            names = {r["day"]: r["title"] for r in con.execute(
+                "SELECT day, title FROM events WHERE title != '' AND confidence >= ?", (self._cfg["ai_title_min_confidence"],))}
         finally:
             con.close()
         gap = dt.timedelta(hours=self._cfg["session_gap_hours"])
@@ -508,10 +629,12 @@ class Api:
             total = sum(c["duration"] or 0 for c in s["clips"])
             out.append({
                 "num": s["num"], "when": f"{s['start']:%a %b %d, %Y} · {s['start']:%I:%M %p} – {s['end']:%I:%M %p}",
-                "title": folders.most_common(1)[0][0] or "(drive root)",
+                "title": names.get(f"{s['start']:%Y-%m-%d}") or folders.most_common(1)[0][0] or "(drive root)",
+                "ai_title": f"{s['start']:%Y-%m-%d}" in names,
                 "meta": f"{len(s['clips'])} clip{'s' if len(s['clips']) != 1 else ''} · {fmt_dur(total)} · " + " + ".join(cams) + " · "
                         + human(sum(c["size"] or 0 for c in s["clips"])),
-                "clips": [{"rel": c["rel"], "name": c["name"], "time": c["time"], "dur": c["dur"], "cam": c["cam"]}
+                "clips": [{"rel": c["rel"], "name": c["name"], "time": c["time"], "dur": c["dur"], "cam": c["cam"],
+                           "desc": c["description"] or ""}
                           for c in clips[:24]],
                 "more": max(len(clips) - 24, 0),
                 "folder": folders.most_common(1)[0][0],
@@ -594,6 +717,11 @@ class Api:
             cfg["session_gap_hours"] = max(0.25, float(new["session_gap_hours"]))
             cfg["wide_span_days"] = max(1, int(new["wide_span_days"]))
             cfg["workers"] = min(32, max(1, int(new["workers"])))
+            cfg["use_ai_titles"] = bool(new.get("use_ai_titles"))
+            cfg["transcribe"] = bool(new.get("transcribe"))
+            cfg["auto_setup"] = bool(new.get("auto_setup"))
+            cfg["vision_model"] = str(new.get("vision_model") or cfg["vision_model"]).strip()
+            cfg["frames_per_clip"] = min(12, max(1, int(new.get("frames_per_clip") or cfg["frames_per_clip"])))
             names = [x.strip().lower() for x in str(new.get("generic_folder_names", "")).splitlines() if x.strip()]
             if names:
                 cfg["generic_folder_names"] = sorted(set(names))
@@ -644,7 +772,7 @@ UITEST_JS = r"""
 (async () => {
   const r = {};
   r.bridge_global = window.chrome && window.chrome.webview ? "ok" : "ERR window.chrome.webview missing (a page global is shadowing window.chrome?)";
-  const calls = [["state", []], ["review", []], ["plan_view", []], ["edit_queue", ["all"]],
+  const calls = [["state", []], ["analysis_setup", []], ["review", []], ["plan_view", []], ["edit_queue", ["all"]],
                  ["get_settings", []], ["report_text", []]];
   for (const [m, a] of calls) {
     const t = performance.now();
@@ -691,7 +819,7 @@ def uitest():
 
     webview.start(drive, http_server=True)
     ok = (not result.get("error") and all(str(result.get(k, "")).startswith("ok") for k in
-          ("bridge_global", "state", "review", "plan_view", "edit_queue", "get_settings", "report_text"))
+          ("bridge_global", "state", "analysis_setup", "review", "plan_view", "edit_queue", "get_settings", "report_text"))
           and "Settings" in result.get("settings_page", "") and not result.get("errors"))
     return 0 if ok else 1
 
@@ -724,6 +852,7 @@ def main():
     try:
         import webview
         api = Api()
+        api.auto_setup()
         api._window = webview.create_window(f"MediaOrg {mo.VERSION}", str(UI_DIR / "index.html"), js_api=api,
                                            width=1360, height=900, min_size=(900, 640), background_color="#0E1014")
         webview.start(http_server=True, debug="--debug" in sys.argv)

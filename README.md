@@ -2,7 +2,7 @@
 
 Windows app that organizes a media drive **in place**: it reads the real capture date of every photo and video, keeps named project folders intact, date-sorts loose camera files, keeps Insta360 sets together, and builds an edit queue of shoot sessions. Nothing is copied or deleted, and every move can be undone.
 
-> Status: phase 1 with the desktop dashboard (indexing, planning, moving, undo, reports). GPU content analysis is next.
+> Status: phase 1 with the desktop dashboard (indexing, planning, moving, undo, reports). Phase 2 adds the overnight GPU analysis run (below).
 
 ## Install (Windows 10/11)
 
@@ -55,7 +55,10 @@ Change these in **Settings**, then **Rebuild plan** on the Plan & apply screen.
 - `edit_queue.csv` lists every video sorted by capture time and grouped into shoot sessions.
 - `plan.csv`, `review.csv` and `duplicates.csv` cover the details.
 
-## Coming in Phase 2 (GPU)
-- Keyframe and thumbnail proxies cached on the NVMe, decoded on the 3090.
-- A local vision model (via Ollama) describes each clip and photo, and Whisper transcribes audio.
-- Date folders get event names, e.g. `2025-08-28_BurningMan_Helios`.
+## Phase 2: overnight analysis (GPU)
+Everything runs on this PC; nothing is uploaded.
+- **Overnight run** (dashboard): scan, describe every clip, name each day's event, build the plan, write the report. It never stops to ask. It stops before Apply unless you tick "Also apply the plan when finished". Windows is kept awake while it runs, and an interrupted run can be resumed.
+- Keyframes are decoded on the GPU (NVDEC) with the bundled `ffmpeg`, and described by a vision model served by [Ollama](https://ollama.com). Insta360 `.insv` clips are described from their `.lrv` proxy.
+- Day folders get names like `2025-08-28 Beach day` when the model is confident (default 60%); unsure names keep just the date and appear under **Action items > AI review**, along with clips that failed. Descriptions show in the Edit queue.
+- **Setup is automatic.** On start, MediaOrg installs Ollama (the official installer, signature-checked, no admin prompt) and downloads the `qwen2.5vl:7b` vision model if they're missing, with progress on the dashboard. That's roughly 8 GB, once, and it resumes if interrupted. Turn it off in Settings; **Check setup** and **Download & install now** are on the dashboard. Whisper transcripts are optional and not downloaded automatically (`pip install faster-whisper` when running from source).
+- Tests: `python tests/test_analyze.py`, `tests/test_overnight.py` and `tests/test_components.py` (fake Ollama, throwaway folder).
