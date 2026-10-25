@@ -86,6 +86,20 @@ def main():
     HAVE_MODEL["yes"] = False
     assert components.ensure(cfg) and HAVE_MODEL["yes"], "missing model should be pulled"
     assert analyze._model_present(cfg, analyze._ollama(cfg, "/api/tags"))
+    # Programs we launch must not inherit the packaged app's folder on PATH (they'd lock its DLLs)
+    old_path, old_mei = os.environ["PATH"], getattr(sys, "_MEIPASS", None)
+    try:
+        sys._MEIPASS = r"C:\Apps\MediaOrg\_internal"
+        os.environ["PATH"] = os.pathsep.join([r"C:\Apps\MediaOrg\_internal", r"C:\Apps\MediaOrg\_internal\sub", r"C:\Windows"])
+        env = components.clean_env()
+        assert env["PATH"] == r"C:\Windows" and env["PYINSTALLER_RESET_ENVIRONMENT"] == "1", env["PATH"]
+    finally:
+        os.environ["PATH"] = old_path
+        if old_mei is None:
+            del sys._MEIPASS
+        else:
+            sys._MEIPASS = old_mei
+
     # Whisper: the newest *release with Windows binaries* is chosen (the plain v-tags can have none), GPU build preferred
     rel = lambda tag, names: {"tag_name": tag, "assets": [{"name": n, "browser_download_url": "u/" + n, "size": 1,
                                                           "digest": "sha256:abc"} for n in names]}

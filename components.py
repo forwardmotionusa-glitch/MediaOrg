@@ -32,6 +32,19 @@ def _log(msg):
     getattr(mo, "print", print)(msg)
 
 
+def clean_env():
+    """Environment for programs MediaOrg launches (Ollama and its installer). The packaged app's bootloader puts its own
+    folder on PATH; without this, Ollama's model runner would load MediaOrg's DLLs and keep them locked (so the app
+    folder couldn't be updated or deleted while Ollama runs)."""
+    env = dict(os.environ)
+    meipass = getattr(__import__("sys"), "_MEIPASS", None)
+    if meipass:
+        keep = [p for p in env.get("PATH", "").split(os.pathsep) if p and not os.path.normcase(p).startswith(os.path.normcase(meipass))]
+        env["PATH"] = os.pathsep.join(keep)
+    env["PYINSTALLER_RESET_ENVIRONMENT"] = "1"
+    return env
+
+
 def ollama_exe():
     cands = [os.path.join(os.environ.get("LOCALAPPDATA", ""), "Programs", "Ollama", "ollama.exe"),
              os.path.join(os.environ.get("ProgramFiles", ""), "Ollama", "ollama.exe")]
@@ -95,8 +108,8 @@ def start_ollama(cfg):
     exe = ollama_exe()
     if not exe:
         return False
-    subprocess.Popen([exe, "serve"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                     creationflags=mo.NO_WINDOW | 0x00000008)     # DETACHED_PROCESS: survives closing MediaOrg
+    subprocess.Popen([exe, "serve"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, env=clean_env(),
+                     cwd=os.path.dirname(exe), creationflags=mo.NO_WINDOW | 0x00000008)   # DETACHED_PROCESS: survives closing MediaOrg
     return True
 
 
@@ -117,7 +130,8 @@ def install_ollama(cfg):
     _set(pct=92, message="Checking the installer's signature…")
     verify_signed(dest)
     _set(pct=94, message="Installing Ollama…")
-    r = subprocess.run([dest, "/VERYSILENT", "/NORESTART", "/SUPPRESSMSGBOXES"], timeout=900)
+    r = subprocess.run([dest, "/VERYSILENT", "/NORESTART", "/SUPPRESSMSGBOXES"], timeout=900, env=clean_env(),
+                       cwd=os.path.dirname(dest))
     if r.returncode != 0:
         raise RuntimeError(f"The Ollama installer stopped with code {r.returncode}.")
     try:
